@@ -1,0 +1,41 @@
+{
+  "name": "open-mem",
+  "version": "0.1.0",
+  "description": "Episodic session memory for AI coding agents — captures tool calls, edits, and outputs across sessions into local SQLite, then injects compressed context at session start. The episodic layer of a full agent memory stack (pairs with QMD + probe).",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/worker/server.ts",
+    "test": "bun test tests/",
+    "test:hooks": "bun test tests/hooks.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.11",
+    "bun-types": "1.3.9",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.39.0",
+    "hono": "4.11.10"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "homepage": "https://github.com/CryptoKrad/open-mem",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CryptoKrad/open-mem.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "openClaw",
+    "agent",
+    "memory",
+    "episodic",
+    "sqlite",
+    "bun",
+    "hooks",
+    "context"
+  ]
+}

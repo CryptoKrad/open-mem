@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Internal build reports (not part of the OSS release)
+docs/
+
+# Build output
+dist/
+
+# Runtime data (never commit personal DB or tokens)
+.c-mem/
+*.db
+*.db-shm
+*.db-wal
+auth.token
+*.token
+
+# Logs
+*.log
+nohup.out
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Test coverage
+coverage/
+
+# Environment
+.env
+.env.*
