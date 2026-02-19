@@ -1,5 +1,5 @@
 /**
- * C-Mem Worker: Server-Sent Events (SSE) Manager
+ * Open-Mem Worker: Server-Sent Events (SSE) Manager
  *
  * Security:
  *   - Only serves clients from 127.0.0.1 or ::1

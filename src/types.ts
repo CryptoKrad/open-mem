@@ -1,5 +1,5 @@
 /**
- * C-Mem Shared Type Definitions
+ * Open-Mem Shared Type Definitions
  *
  * NOTE (Builder B → Builder A):
  *   This file was authored by Builder B since Builder A's types.ts
@@ -15,7 +15,7 @@
 // Hook I/O Types (Builder A)
 // ───────────────────────────────────────────────────────
 
-/** Input received by all C-Mem hooks from Claude Code / OpenClaw via stdin */
+/** Input received by all Open-Mem hooks from Claude Code / OpenClaw via stdin */
 export interface HookInput {
   session_id: string;
   tool_name?: string;
@@ -26,7 +26,7 @@ export interface HookInput {
   [key: string]: unknown;
 }
 
-/** Output written to stdout by all C-Mem hooks */
+/** Output written to stdout by all Open-Mem hooks */
 export interface HookOutput {
   continue?: boolean;
   suppressOutput?: boolean;
@@ -337,7 +337,7 @@ export interface CMemConfig {
 export const DEFAULT_CONFIG: CMemConfig = {
   workerPort: 37888,
   workerHost: "127.0.0.1",
-  dataDir: `${process.env["HOME"] ?? "/tmp"}/.c-mem`,
+  dataDir: `${process.env["HOME"] ?? "/tmp"}/.open-mem`,
   model: "claude-sonnet-4-5",
   contextObservations: 50,
   contextSessions: 10,

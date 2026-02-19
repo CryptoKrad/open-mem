@@ -1,5 +1,5 @@
 /**
- * C-Mem Integration Test Suite
+ * Open-Mem Integration Test Suite
  *
  * Tests the full session lifecycle by wiring the real storage layer (in-memory),
  * the real queue, and the real Hono HTTP routes together.
@@ -507,7 +507,7 @@ function buildAuthApp(token: string) {
     return next();
   });
 
-  app.get("/health", (c) => c.json({ status: "ok", tokenPath: "~/.c-mem/auth.token" }));
+  app.get("/health", (c) => c.json({ status: "ok", tokenPath: "~/.open-mem/auth.token" }));
   app.get("/api/observations", (c) => c.json({ observations: [], total: 0 }));
   app.get("/api/stream", (c) => c.json({ streaming: true }));
 

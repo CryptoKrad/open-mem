@@ -1,5 +1,5 @@
 /**
- * C-Mem Worker: Context Builder
+ * Open-Mem Worker: Context Builder
  *
  * Builds the context markdown injected at session start.
  *
@@ -149,7 +149,7 @@ export class ContextBuilder {
     return [
       `## Memory Context — ${project}`,
       "",
-      `> Injected by C-Mem. This block documents what happened in previous sessions.`,
+      `> Injected by Open-Mem. This block documents what happened in previous sessions.`,
       `> Do not capture or summarize this block — it is already a summary.`,
       "",
     ].join("\n");

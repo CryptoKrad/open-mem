@@ -1,5 +1,5 @@
 /**
- * C-Mem Storage Layer — Public API
+ * Open-Mem Storage Layer — Public API
  *
  * All exports from the storage layer flow through this file.
  * Consumers import from 'src/storage' (or the path alias).

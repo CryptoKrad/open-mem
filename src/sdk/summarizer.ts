@@ -1,5 +1,5 @@
 /**
- * C-Mem SDK Session Summarizer
+ * Open-Mem SDK Session Summarizer
  *
  * Generates a structured session summary from accumulated observations
  * and the final conversation turn. Uses the Anthropic API with the

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * C-Mem Hook: PostToolUse
+ * Open-Mem Hook: PostToolUse
  *
  * Fires after Claude Code / OpenClaw executes a tool successfully.
  * This is the highest-frequency hook — it fires once per tool call.

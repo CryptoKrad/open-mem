@@ -1,5 +1,5 @@
 /**
- * C-Mem Worker: Async Observation Queue
+ * Open-Mem Worker: Async Observation Queue
  *
  * State machine: pending → processing → processed | failed
  *

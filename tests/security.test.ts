@@ -286,9 +286,9 @@ describe("PRC-02: Sandbox profile", () => {
     expect(content).toContain("(deny default)");
   });
 
-  it("sandbox profile allows C-Mem data dir", () => {
+  it("sandbox profile allows Open-Mem data dir", () => {
     const content = readFileSync(SANDBOX_PATH, "utf-8");
-    expect(content).toContain(".c-mem");
+    expect(content).toContain(".open-mem");
   });
 
   it("sandbox profile allows HTTPS outbound (port 443)", () => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * C-Mem Hook: Stop (session pause / user stops prompting)
+ * Open-Mem Hook: Stop (session pause / user stops prompting)
  *
  * Fires when Claude Code finishes responding and the session is paused.
  * Can fire multiple times per session (each pause is a checkpoint).

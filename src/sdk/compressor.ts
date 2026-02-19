@@ -1,5 +1,5 @@
 /**
- * C-Mem SDK Observation Compressor
+ * Open-Mem SDK Observation Compressor
  *
  * Takes a raw tool execution record and compresses it into a structured
  * Observation using the Anthropic API (claude-haiku-3-5 by default for cost).

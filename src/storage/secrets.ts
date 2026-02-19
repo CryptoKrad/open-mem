@@ -1,5 +1,5 @@
 /**
- * C-Mem Secret Scrubber
+ * Open-Mem Secret Scrubber
  *
  * Regex-based scrubber applied BEFORE any content reaches the database.
  * Replaces detected secrets with [REDACTED] markers.

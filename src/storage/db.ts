@@ -1,5 +1,5 @@
 /**
- * C-Mem Database Access Layer
+ * Open-Mem Database Access Layer
  *
  * Singleton SQLite connection via bun:sqlite.
  * All reads and writes go through typed methods here.
@@ -44,8 +44,8 @@ import type {
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
-const C_MEM_DIR = join(homedir(), '.c-mem');
-const DB_PATH = join(C_MEM_DIR, 'c-mem.db');
+const OPEN_MEM_DIR = join(homedir(), '.open-mem');
+const DB_PATH = join(OPEN_MEM_DIR, 'open-mem.db');
 
 /** Max payload size for queue messages (100 KB) */
 const MAX_PAYLOAD_BYTES = 100 * 1024;
@@ -136,7 +136,7 @@ let _db: CMemDb | null = null;
 
 /**
  * Returns the singleton database instance, creating it on first call.
- * The database file is created at ~/.c-mem/c-mem.db with 0600 permissions.
+ * The database file is created at ~/.open-mem/open-mem.db with 0600 permissions.
  */
 export function getDb(): DbInterface {
   if (!_db) {
@@ -170,8 +170,8 @@ class CMemDb implements DbInterface {
   constructor(pathOrDb: string | Database) {
     if (typeof pathOrDb === 'string') {
       // Ensure the data directory exists with restricted permissions
-      if (!existsSync(C_MEM_DIR)) {
-        mkdirSync(C_MEM_DIR, { recursive: true, mode: 0o700 });
+      if (!existsSync(OPEN_MEM_DIR)) {
+        mkdirSync(OPEN_MEM_DIR, { recursive: true, mode: 0o700 });
       }
 
       this._db = new Database(pathOrDb, { create: true });

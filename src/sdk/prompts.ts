@@ -1,11 +1,11 @@
 /**
- * C-Mem SDK Prompt Builders
+ * Open-Mem SDK Prompt Builders
  *
  * Original XML prompt templates for observation compression and session
  * summarization. These prompts are our own design — NOT copied from any
  * other memory system.
  *
- * Schema names: <c-mem-compress> and <c-mem-summarize> (unique to C-Mem).
+ * Schema names: <c-mem-compress> and <c-mem-summarize> (unique to Open-Mem).
  *
  * @module sdk/prompts
  */
@@ -52,7 +52,7 @@ function truncate(str: string, maxChars: number): string {
 
 /**
  * Build the XML prompt that instructs the LLM to compress a raw tool
- * observation into a structured C-Mem memory record.
+ * observation into a structured Open-Mem memory record.
  *
  * The <c-mem-compress> schema is our original design.
  * Response schema: <memory> with sub-elements type, title, narrative, etc.

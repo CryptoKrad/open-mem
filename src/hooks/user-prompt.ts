@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * C-Mem Hook: UserPromptSubmit
+ * Open-Mem Hook: UserPromptSubmit
  *
  * Fires when the user submits a prompt in a Claude Code / OpenClaw session.
  *
@@ -37,7 +37,7 @@ import type { HookInput, HookOutput } from "../types.js";
 // ─── DB Helpers ───────────────────────────────────────────────────────────────
 
 /**
- * Open (or create) the C-Mem SQLite database.
+ * Open (or create) the Open-Mem SQLite database.
  * Enables WAL mode and foreign keys for data integrity.
  * All DB operations use parameterized queries.
  */

@@ -1,5 +1,5 @@
 /**
- * C-Mem SQLite Schema
+ * Open-Mem SQLite Schema
  *
  * All DDL statements for initialising a fresh database.
  * Executed in order by migrations.ts on startup.

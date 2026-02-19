@@ -1,7 +1,7 @@
 /**
- * C-Mem Configuration Loader
+ * Open-Mem Configuration Loader
  *
- * Loads settings from ~/.c-mem/settings.json, applies environment variable
+ * Loads settings from ~/.open-mem/settings.json, applies environment variable
  * overrides, validates values, and returns a frozen WorkerConfig.
  *
  * Security requirements applied:
@@ -35,7 +35,7 @@ const VALID_MODELS = new Set([
 const DEFAULTS: WorkerConfig = {
   port: 37888,
   bindHost: "127.0.0.1", // SECURITY: Never 0.0.0.0 by default
-  dbPath: join(homedir(), ".c-mem", "c-mem.db"),
+  dbPath: join(homedir(), ".open-mem", "open-mem.db"),
   model: "claude-haiku-3-5",
   maxObsPerContext: 50,
   maxSessionsPerContext: 10,
@@ -81,7 +81,7 @@ function validateHost(host: string, source: string): string {
   if (host === "0.0.0.0") {
     process.stderr.write(
       `[c-mem] WARNING: bind host set to 0.0.0.0 via ${source}. ` +
-        `This exposes the C-Mem worker to your local network with no authentication. ` +
+        `This exposes the Open-Mem worker to your local network with no authentication. ` +
         `Set C_MEM_HOST=127.0.0.1 to restrict to localhost.\n`
     );
   }
@@ -105,11 +105,11 @@ type SettingsFile = Partial<{
 }>;
 
 /**
- * Ensure the ~/.c-mem directory exists with secure permissions (0700),
+ * Ensure the ~/.open-mem directory exists with secure permissions (0700),
  * then read or create settings.json.
  */
 function loadSettingsFile(): SettingsFile {
-  const configDir = join(homedir(), ".c-mem");
+  const configDir = join(homedir(), ".open-mem");
 
   // Create directory with restricted permissions
   if (!existsSync(configDir)) {
@@ -147,11 +147,11 @@ function loadSettingsFile(): SettingsFile {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Load and validate C-Mem configuration.
+ * Load and validate Open-Mem configuration.
  *
  * Priority order (highest wins):
  * 1. Environment variables (C_MEM_PORT, C_MEM_MODEL, C_MEM_DB_PATH, C_MEM_HOST)
- * 2. ~/.c-mem/settings.json
+ * 2. ~/.open-mem/settings.json
  * 3. Built-in defaults
  *
  * @returns Frozen WorkerConfig — all fields are validated
@@ -216,7 +216,7 @@ export function projectFromCwd(cwd: string): string {
 }
 
 /**
- * Return the base URL of the C-Mem worker HTTP API.
+ * Return the base URL of the Open-Mem worker HTTP API.
  */
 export function workerBaseUrl(config: Pick<WorkerConfig, "bindHost" | "port">): string {
   return `http://${config.bindHost}:${config.port}`;

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * C-Mem Hook: SessionStart
+ * Open-Mem Hook: SessionStart
  *
  * Fires when Claude Code / OpenClaw starts a session (startup, /clear, compact).
- * Fetches recent context from the C-Mem worker and returns it as
+ * Fetches recent context from the Open-Mem worker and returns it as
  * additionalContext for silent injection into Claude's context window.
  *
  * Graceful degradation: if the worker is down, returns empty context — the

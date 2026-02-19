@@ -1,5 +1,5 @@
 /**
- * C-Mem Storage Layer Tests
+ * Open-Mem Storage Layer Tests
  *
  * Tests are grouped by sub-module:
  *   1. Secret scrubbing

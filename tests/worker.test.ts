@@ -1,5 +1,5 @@
 /**
- * C-Mem Worker Tests
+ * Open-Mem Worker Tests
  *
  * Coverage:
  *   - GET /health returns correct shape

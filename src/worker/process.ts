@@ -1,8 +1,8 @@
 /**
- * C-Mem Worker: Process Manager
+ * Open-Mem Worker: Process Manager
  *
  * Manages the worker as a child process:
- *   - PID file at ~/.c-mem/worker.pid (atomic write, no TOCTOU)
+ *   - PID file at ~/.open-mem/worker.pid (atomic write, no TOCTOU)
  *   - Health check: GET /health with 10s timeout, retry 3x with 2s delay
  *   - Graceful shutdown: SIGTERM → wait 5s → SIGKILL
  *   - Auto-restart on crash (max 3 restarts in 60s, then alert and give up)
@@ -28,7 +28,7 @@ import { join } from "path";
 // ───────────────────────────────────────────────────────
 
 export interface ProcessManagerOptions {
-  /** Data directory (default: ~/.c-mem) */
+  /** Data directory (default: ~/.open-mem) */
   dataDir?: string;
   /** Worker port */
   port?: number;
@@ -44,7 +44,7 @@ export interface ProcessManagerOptions {
 
 const DEFAULT_DATA_DIR = join(
   process.env["HOME"] ?? "/tmp",
-  ".c-mem"
+  ".open-mem"
 );
 const DEFAULT_PORT = 37888;
 const HEALTH_CHECK_TIMEOUT_MS = 10_000;
@@ -114,7 +114,7 @@ export class ProcessManager {
       ? [
           "-f", sandboxProfile,
           "-D", `HOME=${process.env["HOME"] ?? "/tmp"}`,
-          "-D", `CMEM_DIR=${join(__dirname, "../..")}`,
+          "-D", `OPEN_MEM_DIR=${join(__dirname, "../..")}`,
           "bun", this.workerScript,
         ]
       : [this.workerScript];

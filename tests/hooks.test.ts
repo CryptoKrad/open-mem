@@ -1,5 +1,5 @@
 /**
- * C-Mem Hook Test Suite
+ * Open-Mem Hook Test Suite
  *
  * Tests for:
  * - Privacy utilities (secret scrubbing, tag stripping, session_id validation)

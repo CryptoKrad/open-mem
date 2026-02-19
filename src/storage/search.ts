@@ -1,5 +1,5 @@
 /**
- * C-Mem Search Service
+ * Open-Mem Search Service
  *
  * Implements the 3-layer progressive disclosure search API:
  *
@@ -26,7 +26,7 @@ import type { Observation, IndexResult } from './types.ts';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const QMD_EXPORT_ROOT = join(homedir(), '.c-mem', 'qmd-export');
+const QMD_EXPORT_ROOT = join(homedir(), '.open-mem', 'qmd-export');
 
 /** Safe project name — no path traversal, no shell injection */
 const SAFE_PROJECT_RE = /^[a-zA-Z0-9_-]+$/;
@@ -261,7 +261,7 @@ export class SearchService {
    * Export observations for a project as markdown files into the QMD export
    * directory, then trigger `qmd update && qmd embed` to index them.
    *
-   * Files are written to: ~/.c-mem/qmd-export/{project}/{id}-{slug}.md
+   * Files are written to: ~/.open-mem/qmd-export/{project}/{id}-{slug}.md
    * with YAML frontmatter for QMD metadata.
    *
    * Security: project name must match /^[a-zA-Z0-9_-]+$/ to prevent traversal.
@@ -301,7 +301,7 @@ export class SearchService {
 
     const updateResult = spawnSync('qmd', ['update'], { encoding: 'utf-8' });
     if (updateResult.error) {
-      console.warn('[C-Mem] qmd update failed (QMD not installed?):', updateResult.error.message);
+      console.warn('[Open-Mem] qmd update failed (QMD not installed?):', updateResult.error.message);
       return;
     }
 
@@ -309,7 +309,7 @@ export class SearchService {
       encoding: 'utf-8',
     });
     if (embedResult.error) {
-      console.warn('[C-Mem] qmd embed failed:', embedResult.error.message);
+      console.warn('[Open-Mem] qmd embed failed:', embedResult.error.message);
     }
   }
 
@@ -337,7 +337,7 @@ export class SearchService {
     }
 
     // Parse QMD output: each line may contain a file path like
-    // ~/.c-mem/qmd-export/{project}/{id}-{slug}.md
+    // ~/.open-mem/qmd-export/{project}/{id}-{slug}.md
     const idSet = new Set<number>();
     const stdout = result.stdout ?? '';
     for (const line of stdout.split('\n')) {

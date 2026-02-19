@@ -1,5 +1,5 @@
 /**
- * C-Mem Worker: Hono HTTP Server
+ * Open-Mem Worker: Hono HTTP Server
  *
  * Security model (localhost-only service):
  *   - Binds ONLY to 127.0.0.1 (warns if overridden to 0.0.0.0)
@@ -677,7 +677,7 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
-console.log(`[server] C-Mem worker listening on http://${HOST}:${PORT}`);
+console.log(`[server] Open-Mem worker listening on http://${HOST}:${PORT}`);
 console.log(`[server] Data directory: ${DATA_DIR}`);
 
 export { app, queue, contextBuilder };

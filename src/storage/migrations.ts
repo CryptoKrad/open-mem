@@ -1,5 +1,5 @@
 /**
- * C-Mem Migration Runner
+ * Open-Mem Migration Runner
  *
  * Applies schema migrations in order on database startup.
  * Each migration has a version number and SQL body.

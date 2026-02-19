@@ -1,7 +1,7 @@
 /**
- * C-Mem Privacy & Secret Scrubbing Utilities
+ * Open-Mem Privacy & Secret Scrubbing Utilities
  *
- * All content that enters C-Mem must pass through this module before storage.
+ * All content that enters Open-Mem must pass through this module before storage.
  * Secrets are stripped at the edge (in hooks) before they ever reach the DB
  * or worker. Defense in depth: worker also strips before LLM calls.
  *

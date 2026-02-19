@@ -1,5 +1,5 @@
 /**
- * C-Mem Storage Types
+ * Open-Mem Storage Types
  * Core data types for the storage layer.
  * These are the database record shapes — not the full shared/interfaces.ts contracts.
  */

@@ -1,8 +1,8 @@
 /**
- * C-Mem Auth Token System
+ * Open-Mem Auth Token System
  *
  * Generates a persistent HMAC-safe random token on first run and stores it
- * at ~/.c-mem/auth.token with 0600 permissions.
+ * at ~/.open-mem/auth.token with 0600 permissions.
  *
  * All HTTP endpoints (except GET /health) require:
  *   Authorization: Bearer <token>
@@ -14,7 +14,7 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 
-export const TOKEN_PATH = join(process.env['HOME'] ?? '/tmp', '.c-mem', 'auth.token');
+export const TOKEN_PATH = join(process.env['HOME'] ?? '/tmp', '.open-mem', 'auth.token');
 
 /**
  * Generate and persist a token on first run.

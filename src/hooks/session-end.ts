@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * C-Mem Hook: SessionEnd
+ * Open-Mem Hook: SessionEnd
  *
  * Fires when a Claude Code / OpenClaw session closes (exit, clear, logout).
  *
