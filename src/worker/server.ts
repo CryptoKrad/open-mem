@@ -20,6 +20,8 @@ import { ObservationQueue } from "./queue.js";
 import type { ObservationProcessor, QueueMessage } from "./queue.js";
 import { ContextBuilder } from "./context-builder.js";
 import { compressObservation } from "../sdk/compressor.js";
+import { summarizeSession } from "../sdk/summarizer.js";
+import { loadOpenClawConfig } from "../sdk/openclaw-config.js";
 import { DEFAULT_CONFIG } from "../types.js";
 import { ensureAuthToken, verifyBearer, TOKEN_PATH } from "../auth/token.js";
 import type {
@@ -65,9 +67,9 @@ const AUTH_TOKEN = ensureAuthToken();
 
 const queue = new ObservationQueue(db);
 const contextBuilder = new ContextBuilder(db, {
-  maxTokens: 4_000,
-  maxObservations: 50,
-  maxSessions: 10,
+  maxTokens: 1_800,  // tight budget — summaries carry higher signal
+  maxObservations: 40,
+  maxSessions: 5,
 });
 
 // ───────────────────────────────────────────────────────
@@ -243,7 +245,14 @@ app.get("/api/context", (c) => {
     return c.json({ error: "project query param is required" }, 400);
   }
 
-  const result = contextBuilder.build(project);
+  // Optional topic for FTS-relevance weighting
+  const topic = c.req.query("topic") ?? c.req.query("q") ?? undefined;
+
+  const builder = topic
+    ? new ContextBuilder(db, { maxTokens: 1_800, maxObservations: 40, maxSessions: 5, topic })
+    : contextBuilder;
+
+  const result = builder.build(project);
   return c.text(result.markdown, 200, {
     "Content-Type": "text/markdown; charset=utf-8",
     "X-Token-Estimate": String(result.tokenEstimate),
@@ -382,6 +391,36 @@ app.post("/api/sessions/complete", async (c) => {
 
   db.updateSessionStatus(body.session_id, "completed");
 
+  // In-process summarization: run Haiku summary if API key is present.
+  // Fire-and-forget — never blocks the response.
+  if (process.env["ANTHROPIC_API_KEY"]) {
+    const sessionId = body.session_id;
+    const session = db.getSession(sessionId);
+    if (session) {
+      const observations = db.getObservationsBySession(sessionId);
+      if (observations.length > 0) {
+        summarizeSession(
+          {
+            session_id: sessionId,
+            project: session.project ?? "kradbot",
+            observations,
+            last_user_message: (body as { last_user_message?: string }).last_user_message ?? "",
+            last_assistant_message: (body as { last_assistant_message?: string }).last_assistant_message ?? "",
+            prompt_number: session.prompt_counter ?? observations.length,
+          },
+          session.id
+        )
+          .then((summary) => {
+            db.insertSummary(summary);
+            console.log(`[server] Session ${sessionId} summarized (${observations.length} obs)`);
+          })
+          .catch((err) => {
+            console.warn(`[server] Summarization failed for ${sessionId}: ${err}`);
+          });
+      }
+    }
+  }
+
   return c.json({ success: true, completed: true });
 });
 
@@ -399,7 +438,7 @@ app.get("/api/search", (c) => {
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10), 100);
   const offset = parseInt(c.req.query("offset") ?? "0", 10);
 
-  const results = search.searchObservations(q, { project, limit, offset });
+  const results = search.searchKeyword(q, project ?? undefined, limit);
 
   return c.json({
     results,
@@ -575,6 +614,24 @@ app.all("*", (c) => {
 
 initDb(DATA_DIR);
 
+// ─── Bootstrap Anthropic credentials from OpenClaw config ────────────────────
+// Reads ~/.openclaw/openclaw.json and sets the correct env var so the existing
+// `if (process.env["ANTHROPIC_API_KEY"])` guards open correctly.
+// oat01 OAuth tokens → ANTHROPIC_AUTH_TOKEN (Authorization: Bearer)
+// Standard sk-ant-api* keys → ANTHROPIC_API_KEY (x-api-key)
+if (!process.env["ANTHROPIC_API_KEY"] && !process.env["ANTHROPIC_AUTH_TOKEN"]) {
+  const oclawConfig = loadOpenClawConfig();
+  if (oclawConfig?.authToken) {
+    process.env["ANTHROPIC_AUTH_TOKEN"] = oclawConfig.authToken;
+    // Also set API_KEY so legacy guards (`if ANTHROPIC_API_KEY`) still open
+    process.env["ANTHROPIC_API_KEY"] = oclawConfig.authToken;
+    console.log("[server] Anthropic OAuth token loaded from OpenClaw config");
+  } else if (oclawConfig?.apiKey) {
+    process.env["ANTHROPIC_API_KEY"] = oclawConfig.apiKey;
+    console.log("[server] Anthropic API key loaded from OpenClaw config");
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 4a: Wire Builder A's compressor to the queue processor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,6 +711,39 @@ const compressionProcessor: ObservationProcessor = async (
   console.log(
     `[queue] Processed item ${_queueId} → observation ${obsId} (session: ${msg.sessionId})`
   );
+
+  // ── Threshold-based summarization ────────────────────────────────────────
+  // Sessions rarely call /complete explicitly, so trigger summarization
+  // every SUMMARIZE_EVERY observations to keep summaries fresh.
+  const SUMMARIZE_EVERY = 20;
+  if (process.env["ANTHROPIC_API_KEY"] && obsId % SUMMARIZE_EVERY === 0) {
+    const sessionForSummary = db.getSession(msg.sessionId);
+    if (sessionForSummary) {
+      const allObs = db.getObservationsBySession(msg.sessionId);
+      if (allObs.length >= 5) {
+        // fire-and-forget — never blocks the queue
+        summarizeSession(
+          {
+            session_id: msg.sessionId,
+            project,
+            observations: allObs,
+            last_user_message: `Project: ${project}. Tool session in progress.`,
+            last_assistant_message: `Last tool: ${msg.toolName}`,
+            prompt_number: allObs.length,
+          },
+          (sessionForSummary as unknown as { id: number }).id ?? 0
+        )
+          .then((summary) => {
+            db.insertSummary(summary);
+            console.log(`[queue] Auto-summarized session ${msg.sessionId} at obs ${obsId}`);
+          })
+          .catch((err) =>
+            console.warn(`[queue] Auto-summarization failed: ${err}`)
+          );
+      }
+    }
+  }
+
   return obsId;
 };
 

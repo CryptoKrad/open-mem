@@ -87,7 +87,7 @@ export function buildCompressionPrompt(
       trade-off, discovery, config-change, api-usage, data-model, dependency,
       performance, security, test, refactor
     - Type must be exactly one of: bugfix, feature, refactor, config, research,
-      error, decision, other
+      error, decision, discovery, change, other
     - If the tool output is trivial (e.g. a simple file read with no changes),
       set type to "other" and keep narrative brief
     - If no files were read or modified, leave those elements empty
@@ -109,7 +109,7 @@ export function buildCompressionPrompt(
 Respond with ONLY this XML structure — no explanation, no markdown fences:
 
 <memory>
-  <type>bugfix|feature|refactor|config|research|error|decision|other</type>
+  <type>bugfix|feature|refactor|config|research|error|decision|discovery|change|other</type>
   <title>One-line scannable title here</title>
   <narrative>2-3 sentence explanation of what happened and why it matters.</narrative>
   <tags>

@@ -81,9 +81,17 @@ export async function summarizeSession(
   input: SummarizeInput,
   sessionDbId: number,
   apiKey?: string,
-  model = "claude-haiku-3-5"
+  model = "claude-haiku-4-5"
 ): Promise<Omit<Summary, "id" | "created_at">> {
-  const client = new Anthropic({ apiKey: apiKey ?? process.env.ANTHROPIC_API_KEY });
+  const isOauthToken = (k: string) => k.includes("oat");
+  const rawKey = apiKey ?? process.env.ANTHROPIC_API_KEY ?? "";
+  const OAUTH_BETA_HEADER = "oauth-2025-04-20,claude-code-20250219";
+  // Pass apiKey: null when using authToken + add required OAuth beta header
+  const client = new Anthropic(
+    rawKey && isOauthToken(rawKey)
+      ? { authToken: rawKey, apiKey: null, defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER } }
+      : { apiKey: rawKey || undefined }
+  );
 
   // Build a minimal Session shape for the prompt builder
   const sessionShape: Pick<Session, "claude_session_id" | "project" | "prompt_counter"> =

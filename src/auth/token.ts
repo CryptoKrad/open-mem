@@ -14,7 +14,10 @@ import { randomBytes, timingSafeEqual } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 
-export const TOKEN_PATH = join(process.env['HOME'] ?? '/tmp', '.open-mem', 'auth.token');
+export const TOKEN_PATH = join(
+  process.env['C_MEM_DATA_DIR'] ?? join(process.env['HOME'] ?? '/tmp', '.open-mem'),
+  'auth.token'
+);
 
 /**
  * Generate and persist a token on first run.

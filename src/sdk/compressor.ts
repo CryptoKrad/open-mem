@@ -15,6 +15,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { buildCompressionPrompt } from "./prompts.js";
+import { loadOpenClawConfig } from "./openclaw-config.js";
 import type { CompressedObservation, ObservationType, RawObservation } from "../types.js";
 
 // ─── XML Parser ───────────────────────────────────────────────────────────────
@@ -45,9 +46,10 @@ function extractAll(xml: string, tag: string): string[] {
 }
 
 /** Validate that a string is one of the known ObservationType values */
-const VALID_TYPES = new Set<ObservationType>([
+const VALID_TYPES = new Set<string>([
   "bugfix", "feature", "refactor", "config",
   "research", "error", "decision", "other",
+  "discovery", "change",  // also valid per anomaly filter
 ]);
 
 function parseObservationType(raw: string): ObservationType {
@@ -106,9 +108,48 @@ const BACKOFF_DELAYS = [1_000, 2_000, 4_000];
 export async function compressObservation(
   raw: RawObservation,
   apiKey?: string,
-  model = "claude-haiku-3-5"
+  model?: string
 ): Promise<CompressedObservation> {
-  const client = new Anthropic({ apiKey: apiKey ?? process.env.ANTHROPIC_API_KEY });
+  // Model resolution: explicit arg → OpenClaw config → hardcoded fallback
+  const oclawConfig = loadOpenClawConfig();
+  const resolvedModel =
+    model ?? oclawConfig?.haikuModelId ?? "claude-haiku-4-5";
+
+  // Key resolution: explicit arg → env vars → OpenClaw config
+  // oat01 OAuth tokens → authToken (Authorization: Bearer)
+  // Standard sk-ant-api* keys → apiKey (x-api-key)
+  const isOauthToken = (k: string) => k.includes("oat");
+
+  // OAuth tokens need `anthropic-beta: oauth-2025-04-20,claude-code-20250219`
+  // on every request — discovered from OpenClaw source (PI_AI_OAUTH_ANTHROPIC_BETAS).
+  // Regular API keys (sk-ant-api*) do not need this header.
+  const OAUTH_BETA_HEADER = "oauth-2025-04-20,claude-code-20250219";
+
+  let clientOpts: ConstructorParameters<typeof Anthropic>[0];
+  // NOTE: Always pass apiKey: null when using authToken — otherwise the SDK
+  // constructor picks up ANTHROPIC_API_KEY from env and apiKeyAuth wins over bearerAuth.
+  if (apiKey) {
+    clientOpts = isOauthToken(apiKey)
+      ? { authToken: apiKey, apiKey: null, defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER } }
+      : { apiKey };
+  } else if (process.env.ANTHROPIC_AUTH_TOKEN) {
+    clientOpts = { authToken: process.env.ANTHROPIC_AUTH_TOKEN, apiKey: null, defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER } };
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    const envKey = process.env.ANTHROPIC_API_KEY;
+    clientOpts = isOauthToken(envKey)
+      ? { authToken: envKey, apiKey: null, defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER } }
+      : { apiKey: envKey };
+  } else if (oclawConfig?.authToken) {
+    clientOpts = { authToken: oclawConfig.authToken, apiKey: null, defaultHeaders: { "anthropic-beta": OAUTH_BETA_HEADER } };
+  } else if (oclawConfig?.apiKey) {
+    clientOpts = { apiKey: oclawConfig.apiKey };
+  } else {
+    throw new Error(
+      "No Anthropic credentials available (checked arg, ANTHROPIC_AUTH_TOKEN/API_KEY env, and ~/.openclaw/openclaw.json)"
+    );
+  }
+
+  const client = new Anthropic(clientOpts);
 
   const prompt = buildCompressionPrompt(
     raw.tool_name,
@@ -130,7 +171,7 @@ export async function compressObservation(
 
     try {
       const response = await client.messages.create({
-        model,
+        model: resolvedModel,
         max_tokens: 1024,
         messages: [{ role: "user", content: prompt }],
       });

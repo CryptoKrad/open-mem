@@ -25,8 +25,22 @@ import { filterObservations } from "../storage/anomaly.js";
 // Constants
 // ───────────────────────────────────────────────────────
 
-const DEFAULT_MAX_TOKENS = 4_000;
+const DEFAULT_MAX_TOKENS = 1_800; // tight budget — summaries carry more signal
 const CHARS_PER_TOKEN = 4; // rough estimate
+
+// Type priority — higher number = shown first
+const TYPE_PRIORITY: Record<string, number> = {
+  error:     9,
+  bugfix:    8,
+  decision:  7,
+  discovery: 6,
+  change:    5,
+  feature:   4,
+  refactor:  3,
+  config:    2,
+  research:  1,
+  other:     0,
+};
 
 // ───────────────────────────────────────────────────────
 // ContextBuilder
@@ -39,6 +53,8 @@ export interface ContextBuilderOptions {
   maxObservations?: number;
   /** How many recent session summaries to include */
   maxSessions?: number;
+  /** Optional FTS topic — if provided, sorts obs by relevance not just recency */
+  topic?: string;
 }
 
 export interface BuiltContext {
@@ -53,14 +69,16 @@ export class ContextBuilder {
   private maxTokens: number;
   private maxObservations: number;
   private maxSessions: number;
+  private topic?: string;
 
   constructor(
     private readonly store: ISessionStore,
     options: ContextBuilderOptions = {}
   ) {
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
-    this.maxObservations = options.maxObservations ?? 50;
-    this.maxSessions = options.maxSessions ?? 10;
+    this.maxObservations = options.maxObservations ?? 40;
+    this.maxSessions = options.maxSessions ?? 5;
+    this.topic = options.topic;
   }
 
   /**
@@ -101,7 +119,7 @@ export class ContextBuilder {
       }
     }
 
-    // ─── 3. Recent observations (detailed) ───
+    // ─── 3. Observations — priority-sorted, trivial filtered ───
     const remaining = budget - usedChars;
     if (remaining > 200) {
       const { observations: rawObs } = this.store.getObservations(
@@ -109,18 +127,27 @@ export class ContextBuilder {
         this.maxObservations,
         0
       );
-      // LLM-02: Filter through anomaly detection before injecting into context.
-      // Blocked observations (prompt injection, unknown type, size anomaly) are excluded.
+      // LLM-02: Filter through anomaly detection
       const observations = filterObservations(rawObs);
-      if (observations.length > 0) {
-        const obsResult = this.buildObservationsSection(
-          observations,
-          remaining
-        );
+
+      // Priority sort: high-signal types first, then recency within same type.
+      // If summaries are present, drop plain "other" obs entirely to save tokens.
+      const hasSummaries = summaryCount > 0;
+      const prioritized = observations
+        .filter((o) => !(hasSummaries && o.type === "other"))
+        .sort((a, b) => {
+          const pa = TYPE_PRIORITY[a.type] ?? 0;
+          const pb = TYPE_PRIORITY[b.type] ?? 0;
+          if (pb !== pa) return pb - pa; // higher priority first
+          return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0); // newer first
+        });
+
+      if (prioritized.length > 0) {
+        const obsResult = this.buildObservationsSection(prioritized, remaining);
         sections.push(obsResult.markdown);
         usedChars += obsResult.markdown.length;
         observationCount = obsResult.count;
-        if (obsResult.count < observations.length) truncated = true;
+        if (obsResult.count < prioritized.length) truncated = true;
       }
     }
 
@@ -224,27 +251,26 @@ export class ContextBuilder {
 
   private buildObservationEntry(obs: Observation): string {
     const date = new Date(obs.created_at_epoch).toLocaleDateString("en-CA");
-    const kindBadge = `\`${obs.type}\``;
     const lines: string[] = [
-      `#### ${kindBadge} ${obs.title} _(${date})_`,
+      `#### \`${obs.type}\` ${obs.title} _(${date})_`,
     ];
 
-    if (obs.narrative) lines.push(`${obs.narrative}`);
+    // Narrative: first sentence only to save tokens
+    if (obs.narrative) {
+      const firstSentence = obs.narrative.split(/\.\s+/)[0];
+      lines.push(firstSentence.endsWith(".") ? firstSentence : `${firstSentence}.`);
+    }
 
-    // Parse JSON arrays safely
     const filesModified = safeJsonParse<string[]>(obs.files_modified, []);
-    const filesRead = safeJsonParse<string[]>(obs.files_read, []);
     const facts = safeJsonParse<string[]>(obs.facts, []);
 
+    // Only show modified files (skip files_read — too noisy for context)
     if (filesModified.length > 0) {
-      lines.push(`**Files modified:** ${filesModified.join(", ")}`);
+      lines.push(`**Modified:** ${filesModified.slice(0, 3).join(", ")}`);
     }
-    if (filesRead.length > 0) {
-      lines.push(`**Files read:** ${filesRead.join(", ")}`);
-    }
+    // Cap facts at 2 — enough signal, lower token cost
     if (facts.length > 0) {
-      lines.push(`**Facts:**`);
-      for (const fact of facts.slice(0, 3)) {
+      for (const fact of facts.slice(0, 2)) {
         lines.push(`- ${fact}`);
       }
     }

@@ -44,8 +44,13 @@ import type {
 
 // ─── Paths ────────────────────────────────────────────────────────────────────
 
-const OPEN_MEM_DIR = join(homedir(), '.open-mem');
-const DB_PATH = join(OPEN_MEM_DIR, 'open-mem.db');
+const _DATA_DIR_OVERRIDE = process.env['C_MEM_DATA_DIR'];
+const OPEN_MEM_DIR = _DATA_DIR_OVERRIDE ?? join(homedir(), '.open-mem');
+// Auto-detect DB filename: legacy CLI instances use c-mem.db, default is open-mem.db
+const _DB_FILENAME = _DATA_DIR_OVERRIDE && existsSync(join(_DATA_DIR_OVERRIDE, 'c-mem.db'))
+  ? 'c-mem.db'
+  : 'open-mem.db';
+const DB_PATH = join(OPEN_MEM_DIR, _DB_FILENAME);
 
 /** Max payload size for queue messages (100 KB) */
 const MAX_PAYLOAD_BYTES = 100 * 1024;
