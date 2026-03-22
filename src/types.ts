@@ -164,6 +164,7 @@ export interface QueueItem {
   tool_name: string;
   tool_input: string; // JSON string
   tool_response: string; // Truncated tool response text
+  prompt_number?: number;
   retry_count: number;
   created_at_epoch: number;
   started_at_epoch?: number;
@@ -216,7 +217,9 @@ export interface ISessionStore {
     sessionId: string,
     toolName: string,
     toolInput: string,
-    toolResponse: string
+    toolResponse: string,
+    project?: string,
+    promptNumber?: number
   ): number;
   getPendingQueueItems(limit?: number): QueueItem[];
   getQueueItem(id: number): QueueItem | null;
@@ -226,6 +229,12 @@ export interface ISessionStore {
     errorMessage?: string
   ): void;
   getQueueCounts(): {
+    pending: number;
+    processing: number;
+    failed: number;
+    stuck: number;
+  };
+  getQueueCountsBySession(sessionId: string): {
     pending: number;
     processing: number;
     failed: number;
@@ -385,6 +394,9 @@ export interface ObservationBody {
   /** Legacy alias accepted for backward compatibility */
   tool_result?: string;
   correlation_id?: string;
+  session_id?: string;
+  project?: string;
+  prompt_number?: number;
 }
 
 export interface SummarizeBody {

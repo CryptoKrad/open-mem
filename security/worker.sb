@@ -1,10 +1,10 @@
-; C-Mem Worker Sandbox Profile (PRC-02)
+; Open-Mem Worker Sandbox Profile (PRC-02)
 ; Applied via: sandbox-exec -f security/worker.sb -DHOME=$HOME -DCMEM_DIR=$(pwd) bun src/worker/server.ts
 ;
 ; Security model:
 ;   - Deny everything by default
 ;   - Allow broad file reads (runtime needs; restricting reads causes SIGABRT on macOS)
-;   - Restrict file WRITES to only C-Mem data dir + /tmp
+;   - Restrict file WRITES to only Open-Mem data dir + /tmp
 ;   - Network: localhost IPC + HTTPS (Anthropic API) + DNS only
 
 (version 1)
@@ -27,9 +27,9 @@
 ; The key security control here is restricting WRITES, not reads.
 (allow file-read*)
 
-; ── File writes: only C-Mem data dir + temp ──────────────────────────────────
+; ── File writes: only Open-Mem data dir + temp ──────────────────────────────────
 (allow file-write*
-  (subpath (string-append (param "HOME") "/.c-mem"))
+  (subpath (string-append (param "HOME") "/.open-mem"))
   (subpath "/private/tmp")
   (literal "/dev/stderr")
   (literal "/dev/stdout")

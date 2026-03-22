@@ -12,38 +12,19 @@
 
 /** Patterns matched against text before storage. Order matters — more specific first. */
 const SECRET_PATTERNS: RegExp[] = [
-  // AWS credentials
-  /AWS_ACCESS_KEY_ID\s*[=:]\s*[A-Z0-9]{20}/gi,
-  /AWS_SECRET_ACCESS_KEY\s*[=:]\s*[A-Za-z0-9\/+=]{40}/gi,
-
-  // Anthropic API keys  (sk-ant- prefix, 80+ chars)
-  /sk-ant-[a-zA-Z0-9\-_]{80,}/g,
-
-  // OpenAI API keys  (sk- prefix, exactly 48 alphanum)
-  /sk-[a-zA-Z0-9]{48}/g,
-
-  // Generic Bearer tokens
-  /Bearer\s+[A-Za-z0-9\-._~+\/]+=*/g,
-
-  // Passwords
-  /password\s*[=:]\s*\S+/gi,
-
-  // API keys (generic)
-  /api[_-]?key\s*[=:]\s*\S+/gi,
-
-  // Tokens (generic, at least 20 chars to avoid false positives)
-  /token\s*[=:]\s*[A-Za-z0-9\-._~+\/]{20,}/gi,
-
-  // Private keys
-  /private[_-]?key\s*[=:]\s*\S+/gi,
-
-  // GitHub tokens
-  /ghp_[a-zA-Z0-9]{36}/g,
-  /ghs_[a-zA-Z0-9]{36}/g,
-  /github_pat_[a-zA-Z0-9_]{82}/g,
-
-  // Generic high-entropy secrets (e.g., base64 blobs in env vars)
-  /(?:SECRET|CREDENTIAL|PASSWD|PWD)\s*[=:]\s*\S{8,}/gi,
+  /\b(AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16}\b/g,
+  /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*["']?[A-Za-z0-9+/]{40}["']?/gi,
+  /sk-ant-[A-Za-z0-9_-]{20,200}/g,
+  /\bsk-(?:live|proj|test|svcacct)?[A-Za-z0-9_-]{20,200}\b/g,
+  /\bgh(?:p|s|o|u|r)_[A-Za-z0-9]{20,255}\b/g,
+  /\bgithub_pat_[A-Za-z0-9_]{40,255}\b/g,
+  /\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{10,255}\b/g,
+  /\/\/[^\n\s]+:_authToken\s*=\s*\S+/g,
+  /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
+  /\b[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){2}\b/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  /(?:password|passwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|authorization)\s*[=:]\s*["']?[^\s"',;\]}]{4,}["']?/gi,
+  /^[A-Z][A-Z0-9_]{2,}(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|COOKIE|AUTH)[A-Z0-9_]*\s*=.+$/gm,
 ];
 
 const REDACTED = '[REDACTED]';

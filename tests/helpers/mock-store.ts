@@ -169,7 +169,9 @@ export class MockSessionStore implements ISessionStore {
     sessionId: string,
     toolName: string,
     toolInput: string,
-    toolResponse: string
+    toolResponse: string,
+    _project?: string,
+    promptNumber?: number
   ): number {
     const id = this.alloc();
     const item: QueueItem = {
@@ -179,6 +181,7 @@ export class MockSessionStore implements ISessionStore {
       tool_name: toolName,
       tool_input: toolInput,
       tool_response: toolResponse,
+      prompt_number: promptNumber,
       retry_count: 0,
       created_at_epoch: Date.now(),
     };
@@ -218,6 +221,26 @@ export class MockSessionStore implements ISessionStore {
     stuck: number;
   } {
     const all = [...this.queue.values()];
+    const stuckCutoff = Date.now() - 5 * 60 * 1_000;
+    return {
+      pending: all.filter((i) => i.status === "pending").length,
+      processing: all.filter((i) => i.status === "processing").length,
+      failed: all.filter((i) => i.status === "failed").length,
+      stuck: all.filter(
+        (i) =>
+          i.status === "processing" &&
+          (i.started_at_epoch ?? 0) < stuckCutoff
+      ).length,
+    };
+  }
+
+  getQueueCountsBySession(sessionId: string): {
+    pending: number;
+    processing: number;
+    failed: number;
+    stuck: number;
+  } {
+    const all = [...this.queue.values()].filter((i) => i.session_id === sessionId);
     const stuckCutoff = Date.now() - 5 * 60 * 1_000;
     return {
       pending: all.filter((i) => i.status === "pending").length,

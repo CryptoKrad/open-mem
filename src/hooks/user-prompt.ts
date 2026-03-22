@@ -142,7 +142,6 @@ function savePrompt(
 function notifyWorker(
   workerUrl: string,
   sessionId: string,
-  sessionDbId: number,
   project: string,
   userPrompt: string,
   promptNumber: number
@@ -156,7 +155,7 @@ function notifyWorker(
       "Content-Type": "application/json",
       ...(AUTH_TOKEN ? { "Authorization": `Bearer ${AUTH_TOKEN}` } : {}),
     },
-    body: JSON.stringify({ sessionId, sessionDbId, project, userPrompt, promptNumber }),
+    body: JSON.stringify({ session_id: sessionId, project, userPrompt, promptNumber }),
     signal: controller.signal,
   })
     .then(() => clearTimeout(timer))
@@ -194,7 +193,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const rawPrompt = input.prompt ?? "";
+  const rawPrompt = typeof input.prompt === "string" ? input.prompt : "";
 
   // Strip privacy tags first, then scrub secrets
   const strippedPrompt = stripPrivacyTags(rawPrompt);
@@ -225,7 +224,6 @@ async function main(): Promise<void> {
     notifyWorker(
       workerBaseUrl(config),
       input.session_id,
-      sessionDbId,
       project,
       cleanPrompt,
       promptNumber

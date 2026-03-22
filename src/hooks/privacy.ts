@@ -5,33 +5,16 @@
  * Secrets are stripped at the edge (in hooks) before they ever reach the DB
  * or worker. Defense in depth: worker also strips before LLM calls.
  *
- * Security requirements applied:
- * - AWS access key values
- * - Anthropic/OpenAI API keys (sk-ant-*, sk-*, etc.)
- * - Bearer tokens in HTTP headers
- * - Password field assignments (password=, PASSWORD=, etc.)
- * - .env KEY=VALUE pairs (HIGH_ENTROPY_VALUE patterns)
- * - JWTs (header.payload.signature format)
- *
  * @module hooks/privacy
  */
 
+import { homedir } from "os";
+import { basename } from "path";
+
 // ─── Session ID Validation ────────────────────────────────────────────────────
 
-/**
- * Regex that a valid session_id must match.
- * Accepts UUID format and extended UUID-like identifiers used by Claude Code.
- * Rejects anything containing path characters, shell metacharacters, etc.
- */
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 
-/**
- * Validate that a session_id is safe to use as a query parameter or
- * database key. Rejects path traversal characters and shell metacharacters.
- *
- * @param sessionId - Raw session_id from hook stdin
- * @returns true if the session_id is safe, false otherwise
- */
 export function isValidSessionId(sessionId: string): boolean {
   if (typeof sessionId !== "string") return false;
   if (sessionId.length < 8 || sessionId.length > 128) return false;
@@ -40,142 +23,214 @@ export function isValidSessionId(sessionId: string): boolean {
 
 // ─── Secret Scrubbing ─────────────────────────────────────────────────────────
 
-/** Replacement placeholder for scrubbed secrets */
-const REDACTED = "[REDACTED]";
+type Replacement = string | ((substring: string, ...args: string[]) => string);
 
-/**
- * Patterns and their replacement strategies.
- * Order matters: more specific patterns first (API keys before generic password= check).
- */
-const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
-  // AWS Access Key IDs (20-char uppercase alphanumeric starting with AKIA/ASIA/AROA/AIDA)
+const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: Replacement }> = [
   {
     pattern: /\b(AKIA|ASIA|AROA|AIDA)[A-Z0-9]{16}\b/g,
     replacement: "[REDACTED:aws-key-id]",
   },
-  // AWS Secret Access Key value (40-char base64-ish after "aws_secret_access_key=")
   {
     pattern: /(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[=:]\s*["']?([A-Za-z0-9+/]{40})["']?/gi,
     replacement: "aws_secret_access_key=[REDACTED:aws-secret]",
   },
-  // Anthropic API keys — MUST be before generic credential pattern
   {
     pattern: /sk-ant-[A-Za-z0-9_-]{20,200}/g,
     replacement: "[REDACTED:anthropic-key]",
   },
-  // OpenAI / generic sk- API keys — MUST be before generic credential pattern
   {
-    pattern: /\bsk-[A-Za-z0-9_-]{20,200}/g,
+    pattern: /\bsk-(?:live|proj|test|svcacct)?[A-Za-z0-9_-]{20,200}\b/g,
     replacement: "[REDACTED:openai-key]",
   },
-  // Generic Bearer tokens in HTTP headers
+  {
+    pattern: /\bgh(?:p|s|o|u|r)_[A-Za-z0-9]{20,255}\b/g,
+    replacement: "[REDACTED:github-token]",
+  },
+  {
+    pattern: /\bgithub_pat_[A-Za-z0-9_]{40,255}\b/g,
+    replacement: "[REDACTED:github-token]",
+  },
+  {
+    pattern: /\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{10,255}\b/g,
+    replacement: "[REDACTED:slack-token]",
+  },
+  {
+    pattern: /\/\/[^\s]+:_authToken\s*=\s*\S+/g,
+    replacement: "//registry.example/:_authToken=[REDACTED:npm-token]",
+  },
   {
     pattern: /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
     replacement: "Bearer [REDACTED:bearer-token]",
   },
-  // JWTs: three base64url segments separated by dots (each ≥10 chars)
   {
     pattern: /\b[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){2}\b/g,
     replacement: "[REDACTED:jwt]",
   },
-  // URL-embedded credentials: scheme://user:password@host
   {
     pattern: /([a-z][a-z0-9+\-.]*:\/\/[^:@\s]*):([^@\s]{4,})@/gi,
     replacement: "$1:[REDACTED:url-credential]@",
   },
-  // Password / secret / token assignments: password=VALUE or PASSWORD: VALUE
-  // Runs AFTER specific API key patterns to avoid double-labelling
   {
-    pattern: /(?:password|passwd|secret|api_key|apikey|token)\s*[=:]\s*["']?[^\s"',;\[\]]{4,}["']?/gi,
+    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+    replacement: "[REDACTED:private-key-block]",
+  },
+  {
+    pattern: /(?:password|passwd|secret|api[_-]?key|token|access[_-]?key|client[_-]?secret|authorization)\s*[=:]\s*["']?[^\s"',;\[\]}]{4,}["']?/gi,
     replacement: (match: string) => {
-      const key = match.split(/[=:]/)[0].trim();
+      const key = match.split(/[=:]/)[0]?.trim() || "credential";
       return `${key}=[REDACTED:credential]`;
     },
-  } as unknown as { pattern: RegExp; replacement: string },
-  // .env style KEY=VALUE where VALUE looks like a secret (≥16 chars).
-  // Excludes [ and ] so it won't match values already replaced by earlier patterns.
+  },
   {
-    pattern: /^([A-Z][A-Z0-9_]{4,})\s*=\s*["']?([A-Za-z0-9+/=_\-!@#$%^&*.:,;?@]{16,})["']?$/gm,
+    pattern: /^([A-Z][A-Z0-9_]{2,}(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|COOKIE|CREDENTIALS|AUTH)[A-Z0-9_]*)\s*=\s*["']?(?!\[REDACTED)(.{8,})["']?$/gm,
     replacement: "$1=[REDACTED:env-secret]",
   },
 ];
 
-/**
- * Scrub known secret patterns from a string.
- * Non-destructive to surrounding text — only matching substrings are replaced.
- *
- * @param input - Raw string that may contain secrets
- * @returns Scrubbed string with secrets replaced by [REDACTED:type] markers
- */
 export function scrubSecrets(input: string): string {
   if (!input || typeof input !== "string") return input;
 
   let result = input;
   for (const { pattern, replacement } of SECRET_PATTERNS) {
-    if (typeof replacement === "string") {
-      result = result.replace(pattern, replacement);
-    } else {
-      // Replacement is a function (for password= pattern)
-      result = result.replace(pattern, replacement as string);
-    }
+    result = result.replace(pattern, replacement as string);
   }
   return result;
 }
 
-/**
- * Scrub secrets from an arbitrary value.
- * If the value is an object/array, it is JSON-serialized, scrubbed, then
- * returned as a string. If it is already a string, scrub in place.
- *
- * @param value - Any JSON-serializable value
- * @returns Scrubbed string representation
- */
 export function scrubValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   const str = typeof value === "string" ? value : JSON.stringify(value);
   return scrubSecrets(str);
 }
 
+// ─── Sensitive path / command / output detection ─────────────────────────────
+
+const HOME_DIR = homedir().replace(/\\/g, "/").toLowerCase();
+const SENSITIVE_PATH_TESTS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /(^|\/)\.env(?:\.|$)/i, reason: ".env file" },
+  { pattern: /(^|\/)\.openclaw(\/|$)/i, reason: "OpenClaw private state" },
+  { pattern: /(^|\/)\.ssh(\/|$)/i, reason: "SSH material" },
+  { pattern: /(^|\/)\.gnupg(\/|$)/i, reason: "GPG material" },
+  { pattern: /(^|\/)\.aws(\/|$)/i, reason: "AWS credentials" },
+  { pattern: /(^|\/)\.npmrc$/i, reason: "npm auth config" },
+  { pattern: /(^|\/)\.pypirc$/i, reason: "PyPI auth config" },
+  { pattern: /(^|\/)\.netrc$/i, reason: "netrc credentials" },
+  { pattern: /(^|\/)\.docker\/config\.json$/i, reason: "Docker credentials" },
+  { pattern: /(^|\/)auth\.token$/i, reason: "auth token file" },
+  { pattern: /(^|\/)openclaw\.json$/i, reason: "OpenClaw config" },
+  { pattern: /(^|\/)(?:id_rsa|id_ed25519|known_hosts|authorized_keys)$/i, reason: "SSH key material" },
+  { pattern: /(^|\/)(?:credentials|config)$/i, reason: "credential file" },
+];
+
+const SENSITIVE_COMMAND_TESTS: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /(^|\s)(?:env|printenv)(\s|$)/i, reason: "environment dump" },
+  { pattern: /(^|\s)set(\s|$)/i, reason: "shell environment dump" },
+  { pattern: /cat\s+[^\n]*\.env(\.|\s|$)/i, reason: ".env read" },
+  { pattern: /cat\s+[^\n]*auth\.token(\s|$)/i, reason: "token file read" },
+  { pattern: /cat\s+[^\n]*openclaw\.json(\s|$)/i, reason: "OpenClaw config read" },
+  { pattern: /security\s+find-(?:generic|internet)-password/i, reason: "macOS keychain read" },
+  { pattern: /op\s+(?:read|item|get)/i, reason: "1Password secret read" },
+  { pattern: /pass\s+/i, reason: "password store read" },
+  { pattern: /gpg\s+.*(?:--decrypt|-d)/i, reason: "secret decryption" },
+  { pattern: /aws\s+configure\s+(?:get|export-credentials)/i, reason: "AWS credential read" },
+  { pattern: /(?:^|\s)(?:vault|doppler)\s+(?:read|secrets|kv)/i, reason: "secret manager read" },
+];
+
+function normalizePathCandidate(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const expanded = trimmed.startsWith("~/")
+    ? `${homedir().replace(/\\/g, "/")}/${trimmed.slice(2)}`
+    : trimmed;
+  return expanded.replace(/\\/g, "/").toLowerCase();
+}
+
+export function detectSensitivePath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const candidate = normalizePathCandidate(value);
+  if (!candidate) return null;
+
+  for (const test of SENSITIVE_PATH_TESTS) {
+    if (test.pattern.test(candidate)) return test.reason;
+  }
+
+  if (candidate.startsWith(HOME_DIR) && /(\/|^)(?:\.openclaw|\.ssh|\.gnupg|\.aws)(\/|$)/i.test(candidate)) {
+    return "private home-directory secret";
+  }
+
+  const base = basename(candidate);
+  if (/^\.env(?:\..+)?$/i.test(base)) return ".env file";
+  return null;
+}
+
+export function findSensitivePathInValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return detectSensitivePath(value);
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findSensitivePathInValue(item);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (/(?:^|_)(?:path|file|files|cwd|outPath|filePath|paths|source|target|destination)$/i.test(key)) {
+      const found = findSensitivePathInValue(nested);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export function detectSensitiveCommand(command: string): string | null {
+  if (!command || typeof command !== "string") return null;
+  const scrubbed = command.trim();
+  if (!scrubbed) return null;
+  for (const test of SENSITIVE_COMMAND_TESTS) {
+    if (test.pattern.test(scrubbed)) return test.reason;
+  }
+  return null;
+}
+
+export function detectSensitiveOutput(text: string): string | null {
+  if (!text || typeof text !== "string") return null;
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) return "private key block";
+  if (/Bearer\s+[A-Za-z0-9\-._~+/]+=*/i.test(text)) return "bearer token";
+  if (/\bgh(?:p|s|o|u|r)_[A-Za-z0-9]{20,255}\b/.test(text)) return "GitHub token";
+  if (/\bgithub_pat_[A-Za-z0-9_]{40,255}\b/.test(text)) return "GitHub token";
+  if (/\bsk-ant-[A-Za-z0-9_-]{20,200}\b/.test(text)) return "Anthropic key";
+  if (/\bsk-(?:live|proj|test|svcacct)?[A-Za-z0-9_-]{20,200}\b/.test(text)) return "API key";
+  if (/\b[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,}){2}\b/.test(text)) return "JWT";
+
+  const secretAssignments = text.match(/^[A-Z][A-Z0-9_]{2,}(?:KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|COOKIE|AUTH)[A-Z0-9_]*\s*=.+$/gm);
+  if (secretAssignments && secretAssignments.length >= 2) return "secret-bearing env dump";
+
+  return null;
+}
+
 // ─── Privacy Tags ─────────────────────────────────────────────────────────────
 
-/** Max tag replacements per call — prevents ReDoS via deeply nested tags */
 const MAX_TAG_REPLACEMENTS = 100;
-
 const PRIVATE_TAG_RE = /<private>[\s\S]*?<\/private>/gi;
 const C_MEM_CONTEXT_TAG_RE = /<c-mem-context>[\s\S]*?<\/c-mem-context>/gi;
 
-/**
- * Strip <private>...</private> and <c-mem-context>...</c-mem-context> tags
- * from a string. The latter prevents injected memory context from being
- * re-ingested as a new observation (recursion prevention).
- *
- * @param text - Input text possibly containing privacy tags
- * @returns Text with privacy tags and their content removed
- */
-export function stripPrivacyTags(text: string): string {
+export function stripPrivacyTags(text: string): string;
+export function stripPrivacyTags(text: null | undefined): null | undefined;
+export function stripPrivacyTags(text: string | null | undefined): string | null | undefined {
   if (!text || typeof text !== "string") return text;
 
   let count = 0;
-  let result = text.replace(PRIVATE_TAG_RE, () => {
-    return ++count <= MAX_TAG_REPLACEMENTS ? "" : "";
-  });
+  let result = text.replace(PRIVATE_TAG_RE, () => (++count <= MAX_TAG_REPLACEMENTS ? "" : ""));
 
   count = 0;
-  result = result.replace(C_MEM_CONTEXT_TAG_RE, () => {
-    return ++count <= MAX_TAG_REPLACEMENTS ? "" : "";
-  });
+  result = result.replace(C_MEM_CONTEXT_TAG_RE, () => (++count <= MAX_TAG_REPLACEMENTS ? "" : ""));
 
   return result.trim();
 }
 
-/**
- * Returns true if the text is entirely composed of private content —
- * i.e. it contains at least one privacy tag, and nothing remains after
- * stripping all tags and whitespace.
- *
- * Empty strings return false: they are empty, not private.
- * The caller should handle empty prompts separately.
- */
 export function isFullyPrivate(text: string): boolean {
   if (!text || text.trim() === "") return false;
   const stripped = stripPrivacyTags(text).trim();
@@ -184,22 +239,13 @@ export function isFullyPrivate(text: string): boolean {
 
 // ─── Payload Size Limiter ─────────────────────────────────────────────────────
 
-/** Maximum bytes for any single observation payload (50 KB) */
 const MAX_PAYLOAD_BYTES = 50 * 1024;
 
-/**
- * Truncate a string to the maximum allowed payload size (50 KB).
- * Appends a notice so the LLM knows content was cut.
- *
- * @param text - String to enforce size limit on
- * @returns String that is ≤ MAX_PAYLOAD_BYTES bytes (UTF-8)
- */
 export function enforcePayloadLimit(text: string): string {
   const encoded = Buffer.from(text, "utf-8");
   if (encoded.byteLength <= MAX_PAYLOAD_BYTES) return text;
 
   const truncated = encoded.slice(0, MAX_PAYLOAD_BYTES).toString("utf-8");
-  // Trim to last complete character (Buffer slice may break multi-byte chars)
   const safe = truncated.replace(/[\uFFFD\uD800-\uDFFF]+$/, "");
   return safe + "\n[...truncated: payload exceeded 50KB limit]";
 }

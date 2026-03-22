@@ -11,7 +11,7 @@
  * Run with: bun test tests/hooks.test.ts
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import {
   isValidSessionId,
   scrubSecrets,
@@ -19,6 +19,10 @@ import {
   stripPrivacyTags,
   isFullyPrivate,
   enforcePayloadLimit,
+  detectSensitiveCommand,
+  detectSensitiveOutput,
+  detectSensitivePath,
+  findSensitivePathInValue,
 } from "../src/hooks/privacy.js";
 import { buildCompressionPrompt, buildSummaryPrompt } from "../src/sdk/prompts.js";
 import { projectFromCwd, workerBaseUrl } from "../src/config.js";
@@ -256,7 +260,7 @@ describe("stripPrivacyTags", () => {
   });
 
   test("handles non-string input gracefully", () => {
-    expect(stripPrivacyTags(null as unknown as string)).toBe(null);
+    expect(stripPrivacyTags(null)).toBe(null);
   });
 });
 
@@ -299,6 +303,29 @@ describe("enforcePayloadLimit", () => {
     const atLimit = "B".repeat(50 * 1024); // Exactly 50KB
     const result = enforcePayloadLimit(atLimit);
     expect(result).toBe(atLimit);
+  });
+});
+
+describe("sensitive capture denylist", () => {
+  test("detects sensitive paths", () => {
+    expect(detectSensitivePath("~/.ssh/id_ed25519")).toContain("SSH");
+    expect(detectSensitivePath("/Users/test/.openclaw/openclaw.json")).toContain("OpenClaw");
+    expect(detectSensitivePath("./.env.local")).toContain(".env");
+  });
+
+  test("detects nested sensitive paths in tool input", () => {
+    expect(findSensitivePathInValue({ file_path: "~/.aws/credentials" })).toContain("AWS");
+    expect(findSensitivePathInValue({ paths: ["/tmp/out.txt", "~/.ssh/config"] })).toContain("SSH");
+  });
+
+  test("detects sensitive exec commands", () => {
+    expect(detectSensitiveCommand("printenv | sort")).toContain("environment");
+    expect(detectSensitiveCommand("cat ~/.openclaw/openclaw.json")).toContain("OpenClaw config");
+  });
+
+  test("detects sensitive output blocks", () => {
+    expect(detectSensitiveOutput("Authorization: Bearer abcdefghijklmnopqrstuvwxyz")).toContain("bearer token");
+    expect(detectSensitiveOutput("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----")).toContain("private key block");
   });
 });
 
@@ -399,12 +426,18 @@ describe("buildSummaryPrompt", () => {
     {
       id: 1,
       session_id: "session-abc123",
+      project: "my-project",
+      prompt_number: 1,
       tool_name: "Edit",
-      compressed: true,
       type: "bugfix",
       title: "Fixed null check in auth",
       narrative: "Added null check to prevent crash.",
+      tags: "[]",
+      facts: "[]",
+      files_read: "[]",
+      files_modified: "[]",
       created_at: new Date().toISOString(),
+      created_at_epoch: Date.now(),
     },
   ];
 

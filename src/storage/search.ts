@@ -17,7 +17,7 @@
  *  - Export directory traversal is prevented by the project name validation
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { spawnSync } from 'child_process';
@@ -45,20 +45,6 @@ function escapeFTS5(query: string): string | null {
   if (!trimmed) return null;
   // Double any internal double-quotes per FTS5 phrase escape rules
   return `"${trimmed.replace(/"/g, '""')}"`;
-}
-
-/**
- * Build an FTS5 prefix query for a single keyword token.
- * Used internally for prefix/autocomplete-style search.
- */
-function escapeFTS5Prefix(token: string): string | null {
-  const trimmed = token.trim().replace(/['"*:()\^.+\-]/g, ' ').trim();
-  if (!trimmed) return null;
-  // Each space-separated word becomes a separate prefix token
-  return trimmed
-    .split(/\s+/)
-    .map((w) => `${w}*`)
-    .join(' ');
 }
 
 // ─── Search Service ───────────────────────────────────────────────────────────
@@ -166,7 +152,7 @@ export class SearchService {
 
     if (!anchor) return [];
 
-    const before = this._db.query<Observation, [number, number, number]>(
+    const before = this._db.query<Observation, [number, number, number, number]>(
       `SELECT * FROM observations
        WHERE session_id = ?
          AND created_at <= ?
@@ -175,7 +161,7 @@ export class SearchService {
        LIMIT ?`,
     ).all(anchor.session_id, anchor.created_at, observationId, windowSize);
 
-    const after = this._db.query<Observation, [number, number, number]>(
+    const after = this._db.query<Observation, [number, number, number, number]>(
       `SELECT * FROM observations
        WHERE session_id = ?
          AND created_at >= ?
@@ -206,12 +192,12 @@ export class SearchService {
    * Each result contains only: id, title, obs_type, created_at, session_id.
    * Callers use these lightweight results to decide which IDs to fetch in full.
    */
-  searchIndex(query: string, project?: string): IndexResult[] {
+  searchIndex(query: string, project?: string, limit = 50): IndexResult[] {
     const safeQuery = escapeFTS5(query);
     if (!safeQuery) return [];
 
     if (project) {
-      return this._db.query<IndexResult, [string, string]>(
+      return this._db.query<IndexResult, [string, string, number]>(
         `SELECT o.id, o.title, o.obs_type, o.created_at, o.session_id
          FROM obs_fts
          JOIN observations o ON o.id = obs_fts.rowid
@@ -219,18 +205,18 @@ export class SearchService {
          WHERE obs_fts MATCH ?
            AND s.project = ?
          ORDER BY rank
-         LIMIT 50`,
-      ).all(safeQuery, project);
+         LIMIT ?`,
+      ).all(safeQuery, project, limit);
     }
 
-    return this._db.query<IndexResult, [string]>(
+    return this._db.query<IndexResult, [string, number]>(
       `SELECT o.id, o.title, o.obs_type, o.created_at, o.session_id
        FROM obs_fts
        JOIN observations o ON o.id = obs_fts.rowid
        WHERE obs_fts MATCH ?
        ORDER BY rank
-       LIMIT 50`,
-    ).all(safeQuery);
+       LIMIT ?`,
+    ).all(safeQuery, limit);
   }
 
   // ─── Layer 3: Fetch by IDs ─────────────────────────────────────────────────

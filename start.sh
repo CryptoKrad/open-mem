@@ -13,12 +13,14 @@ PIDFILE="/tmp/open-mem.pid"
 # Resolve API key from openclaw config
 API_KEY="$(python3 -c "
 import json
-d = json.load(open('$HOME/.openclaw/openclaw.json'))
-print(d['models']['providers']['anthropic']['apiKey'])
+from pathlib import Path
+cfg = json.load(open(Path.home() / '.openclaw' / 'openclaw.json'))
+provider = cfg.get('models', {}).get('providers', {}).get('anthropic', {})
+print(provider.get('authToken') or provider.get('apiKey') or '')
 " 2>/dev/null || echo "")"
 
 if [[ -z "$API_KEY" ]]; then
-  echo "[open-mem] ERROR: Could not resolve ANTHROPIC_API_KEY from openclaw config" >&2
+  echo "[open-mem] ERROR: Could not resolve Anthropic authToken/apiKey from openclaw config" >&2
   exit 1
 fi
 

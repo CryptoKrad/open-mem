@@ -30,33 +30,6 @@ function makeDb(): { db: DbInterface; raw: Database } {
   return { db, raw };
 }
 
-/** Seed a session and return its id */
-function seedSession(
-  db: DbInterface,
-  claudeSessionId = 'sess-test-1',
-  project = 'test-project',
-): number {
-  return db.createSession(claudeSessionId, project, 'Hello world');
-}
-
-/** Seed an observation and return its id */
-function seedObservation(
-  db: DbInterface,
-  sessionId: number,
-  opts: Partial<{ title: string; narrative: string; tool_name: string; obs_type: string }> = {},
-): number {
-  return db.insertObservation({
-    session_id: sessionId,
-    prompt_number: 1,
-    tool_name: opts.tool_name ?? 'Read',
-    raw_input: '{"path":"src/main.ts"}',
-    compressed: opts.narrative ?? 'Read the main module to understand the entry point.',
-    obs_type: opts.obs_type ?? 'discovery',
-    title: opts.title ?? 'Read main module',
-    narrative: opts.narrative ?? 'Opened src/main.ts to inspect the bootstrap sequence.',
-  });
-}
-
 // ─── 1. Secret Scrubbing ──────────────────────────────────────────────────────
 
 describe('scrubSecrets', () => {
@@ -568,7 +541,6 @@ describe('SearchService', () => {
 
   test('getTimeline returns observations around an anchor', () => {
     // Get all observations in the session to find a middle ID
-    const all = search.searchByType('', 'search-project');
     // Use insertObservation results as anchors
     const obs = rawDb.query<{ id: number }, []>(
       'SELECT id FROM observations ORDER BY id ASC',
@@ -599,7 +571,7 @@ describe('SearchService', () => {
     expect(first).toHaveProperty('created_at');
     expect(first).toHaveProperty('session_id');
     // Should NOT have full narrative/compressed (these are layer-3 fields)
-    expect((first as Record<string, unknown>).compressed).toBeUndefined();
+    expect((first as unknown as Record<string, unknown>).compressed).toBeUndefined();
   });
 
   test('getByIds returns full records for given ids', () => {

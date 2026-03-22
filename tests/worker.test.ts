@@ -14,7 +14,7 @@
  *   - Body size limit: rejects >100KB
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock, jest } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Hono } from "hono";
 import { ObservationQueue } from "../src/worker/queue.js";
 import { SseManager, isLocalhost } from "../src/worker/sse.js";
@@ -262,13 +262,12 @@ describe("ObservationQueue", () => {
 
     q.start(processor);
 
-    const queueId = q.enqueue("sess-1", "Bash", { command: "ls" }, "file.ts");
+    q.enqueue("sess-1", "Bash", { command: "ls" }, "file.ts");
 
     // Wait for all retry attempts (2s + 4s + 8s = up to 14s but with delays)
     // In unit tests we just wait long enough for the first failure to propagate
     await sleep(200);
 
-    const item = store.getQueueItem(queueId);
     // Should be retrying or failed — at least one attempt was made
     expect(attempts).toBeGreaterThanOrEqual(1);
   });
@@ -305,6 +304,49 @@ describe("ObservationQueue", () => {
     expect(typeof status.pending).toBe("number");
     expect(typeof status.processing).toBe("number");
     expect(typeof status.failed).toBe("number");
+  });
+
+  it("waitForSessionDrain waits for active session work to finish", async () => {
+    q.start(async (queueId, msg) => {
+      await sleep(150);
+      return store.createObservation({
+        session_id: msg.sessionId,
+        project: "test-project",
+        prompt_number: msg.promptNumber ?? 1,
+        tool_name: msg.toolName,
+        type: "other",
+        title: `Processed ${queueId}`,
+        narrative: msg.toolResult,
+        tags: "[]",
+        facts: "[]",
+        files_read: "[]",
+        files_modified: "[]",
+        created_at: new Date().toISOString(),
+        created_at_epoch: Date.now(),
+      });
+    });
+
+    const queueId = q.enqueue("sess-1", "Read", {}, "fresh output", "test-project", 2);
+    const drained = await q.waitForSessionDrain("sess-1", { timeoutMs: 1_000, pollIntervalMs: 25 });
+
+    expect(drained.timedOut).toBe(false);
+    expect(drained.pending).toBe(0);
+    expect(drained.processing).toBe(0);
+    expect(drained.waitedMs).toBeGreaterThanOrEqual(100);
+    expect(store.getQueueItem(queueId)?.status).toBe("processed");
+  });
+
+  it("waitForSessionDrain times out when processing does not finish in time", async () => {
+    q.start(async () => {
+      await sleep(250);
+      return 99;
+    });
+
+    q.enqueue("sess-1", "Read", {}, "slow output");
+    const drained = await q.waitForSessionDrain("sess-1", { timeoutMs: 50, pollIntervalMs: 25 });
+
+    expect(drained.timedOut).toBe(true);
+    expect(drained.processing).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -512,9 +554,65 @@ describe("ContextBuilder", () => {
     });
     const result = builder.build("big-project");
 
-    // Should be truncated
     expect(result.truncated).toBe(true);
     expect(result.tokenEstimate).toBeLessThanOrEqual(600); // some slack
+  });
+
+  it("prefers summaries and topic-matched high-signal observations", () => {
+    const store = new MockSessionStore();
+    store.createSummary({
+      session_id: "sess-1",
+      project: "proj",
+      prompt_number: 3,
+      request: "Fix auth caching",
+      work_done: "Patched auth cache invalidation",
+      discoveries: "Session tokens were not refreshed",
+      remaining: "Add regression coverage",
+      notes: "auth cache path",
+      created_at: new Date().toISOString(),
+      created_at_epoch: Date.now(),
+    });
+
+    store.createObservation({
+      session_id: "sess-1",
+      project: "proj",
+      prompt_number: 1,
+      tool_name: "exec",
+      type: "bugfix",
+      title: "Fix auth token refresh race",
+      narrative: "Resolved stale auth cache entries during refresh.",
+      tags: "[]",
+      facts: "[]",
+      files_read: "[]",
+      files_modified: '["src/auth.ts"]',
+      created_at: new Date().toISOString(),
+      created_at_epoch: Date.now(),
+    });
+
+    store.createObservation({
+      session_id: "sess-1",
+      project: "proj",
+      prompt_number: 2,
+      tool_name: "exec",
+      type: "other",
+      title: "exec — passthrough",
+      narrative: "ok",
+      tags: "[]",
+      facts: "[]",
+      files_read: "[]",
+      files_modified: "[]",
+      created_at: new Date().toISOString(),
+      created_at_epoch: Date.now() - 1000,
+    });
+
+    const builder = new ContextBuilder(store, { topic: "auth refresh token", maxObservations: 6, maxSessions: 2 });
+    const result = builder.build("proj");
+
+    expect(result.summaryCount).toBe(1);
+    expect(result.markdown).toContain("Fix auth caching");
+    expect(result.markdown).toContain("Fix auth token refresh race");
+    expect(result.markdown).not.toContain("exec — passthrough");
+    expect(result.observationCount).toBeLessThanOrEqual(4);
   });
 });
 

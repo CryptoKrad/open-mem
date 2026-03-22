@@ -12,7 +12,7 @@
  */
 
 import { EventEmitter } from "events";
-import type { ISessionStore, QueueItem } from "../types.js";
+import type { ISessionStore } from "../types.js";
 import { sseManager } from "./sse.js";
 
 // ───────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ export interface QueueMessage {
   toolName: string;
   toolInput: string; // JSON string
   toolResult: string;
+  promptNumber?: number;
   retryCount: number;
 }
 
@@ -37,6 +38,15 @@ export type ObservationProcessor = (
   queueId: number,
   msg: QueueMessage
 ) => Promise<number>;
+
+export interface SessionDrainResult {
+  pending: number;
+  processing: number;
+  failed: number;
+  stuck: number;
+  timedOut: boolean;
+  waitedMs: number;
+}
 
 // ───────────────────────────────────────────────────────
 // Constants
@@ -115,7 +125,8 @@ export class ObservationQueue extends EventEmitter {
     toolName: string,
     toolInput: unknown,
     toolResult: string,
-    project = ""
+    project = "",
+    promptNumber?: number
   ): number {
     const inputStr = JSON.stringify(toolInput);
     // Truncate tool result to 50KB to prevent oversized payloads
@@ -128,7 +139,8 @@ export class ObservationQueue extends EventEmitter {
       toolName,
       inputStr,
       truncated,
-      project
+      project,
+      promptNumber
     );
 
     const msg: QueueMessage = {
@@ -137,6 +149,7 @@ export class ObservationQueue extends EventEmitter {
       toolName,
       toolInput: inputStr,
       toolResult: truncated,
+      promptNumber,
       retryCount: 0,
     };
     this.pendingItems.push(msg);
@@ -185,6 +198,34 @@ export class ObservationQueue extends EventEmitter {
       this.refillFromDb();
     }
     return count;
+  }
+
+  /**
+   * Briefly wait for a session's queue activity to drain so callers can read a
+   * fresher persisted observation set before making summarize/complete decisions.
+   */
+  async waitForSessionDrain(
+    sessionId: string,
+    options: { timeoutMs?: number; pollIntervalMs?: number } = {}
+  ): Promise<SessionDrainResult> {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 1_500);
+    const pollIntervalMs = Math.max(25, options.pollIntervalMs ?? 50);
+    const startedAt = Date.now();
+
+    this.refillFromDb();
+    if (this.running) this.processSoon();
+
+    let counts = this.store.getQueueCountsBySession(sessionId);
+    while ((counts.pending > 0 || counts.processing > 0) && (Date.now() - startedAt) < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      counts = this.store.getQueueCountsBySession(sessionId);
+    }
+
+    return {
+      ...counts,
+      timedOut: counts.pending > 0 || counts.processing > 0,
+      waitedMs: Date.now() - startedAt,
+    };
   }
 
   // ─────────────────────────────────────

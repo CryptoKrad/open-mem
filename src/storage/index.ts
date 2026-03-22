@@ -22,7 +22,7 @@ import type { DbInterface } from './db.ts';
 /** Lazily-initialised database singleton */
 export const db: DbInterface = new Proxy({} as DbInterface, {
   get(_target, prop) {
-    return (getDb() as Record<string | symbol, unknown>)[prop];
+    return (getDb() as unknown as Record<string | symbol, unknown>)[prop];
   },
 });
 
@@ -39,7 +39,7 @@ export function getSearch(): SearchService {
 /** Convenience alias — same object returned by getSearch() */
 export const search = new Proxy({} as SearchService, {
   get(_target, prop) {
-    return (getSearch() as Record<string | symbol, unknown>)[prop];
+    return (getSearch() as unknown as Record<string | symbol, unknown>)[prop];
   },
 });
 

@@ -24,11 +24,9 @@ import type {
   Session,
   SessionStatus,
   Observation,
-  UserPrompt,
   Summary,
   QueueMessage,
   QueueMessageType,
-  IndexResult,
   ProjectStats,
 } from './types.ts';
 // Builder-B shared types (aliased to avoid name collisions with storage/types.ts)
@@ -96,6 +94,10 @@ function verifyObservationHmac(
 
 // ─── Database Interface ───────────────────────────────────────────────────────
 
+type InsertableObservation = Omit<Observation, 'id' | 'created_at' | 'hmac'> & {
+  hmac?: string | null;
+};
+
 export interface DbInterface {
   // Sessions
   createSession(claudeSessionId: string, project: string, firstPrompt?: string): number;
@@ -104,8 +106,8 @@ export interface DbInterface {
   incrementPromptCounter(id: number): number;
 
   // Observations
-  insertObservation(obs: Omit<Observation, 'id' | 'created_at'>): number;
-  getObservations(project: string, limit: number, offset: number): Observation[];
+  insertObservation(obs: InsertableObservation): number;
+  getObservations(project: string | undefined, limit: number, offset: number): Observation[];
   getObservation(id: number): Observation | null;
   getRecentObservations(project: string, limit: number): Observation[];
 
@@ -252,7 +254,7 @@ class CMemDb implements DbInterface {
 
   // ─── Observations ──────────────────────────────────────────────────────────
 
-  insertObservation(obs: Omit<Observation, 'id' | 'created_at'>): number {
+  insertObservation(obs: InsertableObservation): number {
     // Scrub secrets from both raw_input and compressed text before storage
     const scrubbedRaw = obs.raw_input ? scrubSecrets(obs.raw_input) : null;
     const scrubbedCompressed = scrubSecrets(obs.compressed);
@@ -699,11 +701,13 @@ function _mapQueueItem(row: {
   let toolName = "unknown";
   let toolInput = "{}";
   let toolResult = "";
+  let promptNumber: number | undefined;
   try {
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
     toolName = (payload.toolName as string) ?? "unknown";
     toolInput = (payload.toolInput as string) ?? "{}";
     toolResult = (payload.toolResult as string) ?? "";
+    promptNumber = typeof payload.promptNumber === "number" ? payload.promptNumber : undefined;
   } catch { /* ignore */ }
 
   return {
@@ -713,6 +717,7 @@ function _mapQueueItem(row: {
     tool_name: toolName,
     tool_input: toolInput,
     tool_response: toolResult,
+    prompt_number: promptNumber,
     retry_count: row.retry_count,
     created_at_epoch: row.created_at * 1000,
     started_at_epoch: row.started_at ? row.started_at * 1000 : undefined,
@@ -828,6 +833,7 @@ class DbAdapter implements ISessionStore {
       obs_type: obs.type,
       title: safeTitle,
       narrative: safeNarrative,
+      hmac: null,
     });
   }
 
@@ -847,7 +853,7 @@ class DbAdapter implements ISessionStore {
     limit = 20,
     offset = 0
   ): { observations: BBObservation[]; total: number } {
-    const rows = this.inner.getObservations(project ?? "", limit, offset);
+    const rows = this.inner.getObservations(project, limit, offset);
     const sessionCache = new Map<number, { project: string; session_id: string }>();
     const mapped = (rows as Parameters<typeof _mapObservation>[0][]).map((o) => {
       let meta = sessionCache.get(o.session_id as unknown as number);
@@ -903,6 +909,10 @@ class DbAdapter implements ISessionStore {
       completed: summary.work_done,
       next_steps: summary.remaining,
     });
+  }
+
+  insertSummary(summary: Omit<Summary, "id" | "created_at">): number {
+    return this.inner.insertSummary(summary);
   }
 
   getSummaries(
@@ -995,7 +1005,8 @@ class DbAdapter implements ISessionStore {
     toolName: string,
     toolInput: string,
     toolResponse: string,
-    project = ""
+    project = "",
+    promptNumber?: number
   ): number {
     let session = this.inner.getSession(sessionId);
     if (!session) {
@@ -1009,11 +1020,21 @@ class DbAdapter implements ISessionStore {
         [project, sessionId]
       );
     }
+
+    if (session && typeof promptNumber === "number" && promptNumber > (session.prompt_counter ?? 0)) {
+      _getRawDb().run(
+        "UPDATE sessions SET prompt_counter = ? WHERE claude_session_id = ? AND prompt_counter < ?",
+        [promptNumber, sessionId, promptNumber]
+      );
+      session = this.inner.getSession(sessionId);
+    }
+
     const sessionDbId = session?.id ?? 0;
     return this.inner.enqueue(sessionDbId, "observation", {
       toolName,
       toolInput,
       toolResult: toolResponse,  // stored as toolResult in payload JSON for backward compat
+      ...(typeof promptNumber === "number" ? { promptNumber } : {}),
     });
   }
 
@@ -1092,10 +1113,10 @@ class DbAdapter implements ISessionStore {
 
   getQueueCounts(): { pending: number; processing: number; failed: number; stuck: number } {
     const rawDb = _getRawDb();
-    const getCount = (where: string, params: unknown[] = []) => {
-      const row = rawDb
-        .query<{ count: number }, unknown[]>(`SELECT COUNT(*) as count FROM queue WHERE ${where}`)
-        .get(...params);
+    const getCount = (where: string, param?: number) => {
+      const row = typeof param === "number"
+        ? rawDb.query<{ count: number }, [number]>(`SELECT COUNT(*) as count FROM queue WHERE ${where}`).get(param)
+        : rawDb.query<{ count: number }, []>(`SELECT COUNT(*) as count FROM queue WHERE ${where}`).get();
       return row?.count ?? 0;
     };
     const stuckThresholdSec = 300;
@@ -1105,7 +1126,31 @@ class DbAdapter implements ISessionStore {
       failed: getCount("status = 'failed'"),
       stuck: getCount(
         "status = 'processing' AND started_at IS NOT NULL AND (unixepoch() - started_at) >= ?",
-        [stuckThresholdSec]
+        stuckThresholdSec
+      ),
+    };
+  }
+
+  getQueueCountsBySession(sessionId: string): { pending: number; processing: number; failed: number; stuck: number } {
+    const rawDb = _getRawDb();
+    const stuckThresholdSec = 300;
+    const getCount = (where: string, param?: number) => {
+      const sql = `SELECT COUNT(*) as count
+        FROM queue q
+        JOIN sessions s ON s.id = q.session_id
+       WHERE s.claude_session_id = ? AND ${where}`;
+      const row = typeof param === "number"
+        ? rawDb.query<{ count: number }, [string, number]>(sql).get(sessionId, param)
+        : rawDb.query<{ count: number }, [string]>(sql).get(sessionId);
+      return row?.count ?? 0;
+    };
+    return {
+      pending: getCount("q.status = 'pending'"),
+      processing: getCount("q.status = 'processing'"),
+      failed: getCount("q.status = 'failed'"),
+      stuck: getCount(
+        "q.status = 'processing' AND q.started_at IS NOT NULL AND (unixepoch() - q.started_at) >= ?",
+        stuckThresholdSec
       ),
     };
   }
@@ -1206,6 +1251,10 @@ function getAdapter(): DbAdapter {
  * Initialize the database adapter for the given data directory.
  * Called by server.ts at startup.
  */
+export interface CompatDb extends ISessionStore {
+  insertSummary(summary: Omit<Summary, "id" | "created_at">): number;
+}
+
 export function initDb(_dataDir: string): void {
   getAdapter(); // trigger lazy init
 }
@@ -1224,7 +1273,7 @@ export function _resetCompatForTesting(rawDb?: Database): void {
  * The singleton ISessionStore adapter — wraps CMemDb.
  * Import this as `db` in server.ts and queue.ts.
  */
-export const db: ISessionStore = new Proxy({} as ISessionStore, {
+export const db: CompatDb = new Proxy({} as CompatDb, {
   get(_target, prop) {
     return (getAdapter() as unknown as Record<string | symbol, unknown>)[prop];
   },

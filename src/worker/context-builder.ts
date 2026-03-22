@@ -25,7 +25,7 @@ import { filterObservations } from "../storage/anomaly.js";
 // Constants
 // ───────────────────────────────────────────────────────
 
-const DEFAULT_MAX_TOKENS = 1_800; // tight budget — summaries carry more signal
+const DEFAULT_MAX_TOKENS = 1_200; // summary-first, small injection budget
 const CHARS_PER_TOKEN = 4; // rough estimate
 
 // Type priority — higher number = shown first
@@ -76,8 +76,8 @@ export class ContextBuilder {
     options: ContextBuilderOptions = {}
   ) {
     this.maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
-    this.maxObservations = options.maxObservations ?? 40;
-    this.maxSessions = options.maxSessions ?? 5;
+    this.maxObservations = options.maxObservations ?? 8;
+    this.maxSessions = options.maxSessions ?? 2;
     this.topic = options.topic;
   }
 
@@ -100,7 +100,8 @@ export class ContextBuilder {
     usedChars += header.length;
 
     // ─── 2. Session summaries (compact, high-signal) ───
-    const { summaries } = this.store.getSummaries(project, this.maxSessions, 0);
+    const { summaries: rawSummaries } = this.store.getSummaries(project, this.maxSessions, 0);
+    const summaries = this.rankSummaries(rawSummaries);
     if (summaries.length > 0) {
       const summarySection = this.buildSummariesSection(summaries);
       if (usedChars + summarySection.length <= budget) {
@@ -108,7 +109,6 @@ export class ContextBuilder {
         usedChars += summarySection.length;
         summaryCount = summaries.length;
       } else {
-        // Try to fit as many as possible
         const fitted = this.fitSummaries(summaries, budget - usedChars);
         if (fitted.markdown) {
           sections.push(fitted.markdown);
@@ -119,35 +119,24 @@ export class ContextBuilder {
       }
     }
 
-    // ─── 3. Observations — priority-sorted, trivial filtered ───
+    // ─── 3. Observations — summary-first, tiny, query-aware ───
     const remaining = budget - usedChars;
     if (remaining > 200) {
-      const { observations: rawObs } = this.store.getObservations(
-        project,
-        this.maxObservations,
-        0
-      );
-      // LLM-02: Filter through anomaly detection
-      const observations = filterObservations(rawObs);
+      const fetchLimit = this.topic ? Math.max(this.maxObservations * 3, 12) : this.maxObservations;
+      const { observations: rawObs } = this.store.getObservations(project, fetchLimit, 0);
+      const observations = filterObservations(rawObs)
+        .filter((obs) => !isLowSignalObservation(obs, summaryCount > 0));
 
-      // Priority sort: high-signal types first, then recency within same type.
-      // If summaries are present, drop plain "other" obs entirely to save tokens.
-      const hasSummaries = summaryCount > 0;
       const prioritized = observations
-        .filter((o) => !(hasSummaries && o.type === "other"))
-        .sort((a, b) => {
-          const pa = TYPE_PRIORITY[a.type] ?? 0;
-          const pb = TYPE_PRIORITY[b.type] ?? 0;
-          if (pb !== pa) return pb - pa; // higher priority first
-          return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0); // newer first
-        });
+        .sort((a, b) => this.compareObservations(a, b));
 
-      if (prioritized.length > 0) {
-        const obsResult = this.buildObservationsSection(prioritized, remaining);
+      const selected = prioritized.slice(0, summaryCount > 0 ? Math.min(4, this.maxObservations) : this.maxObservations);
+      if (selected.length > 0) {
+        const obsResult = this.buildObservationsSection(selected, remaining);
         sections.push(obsResult.markdown);
         usedChars += obsResult.markdown.length;
         observationCount = obsResult.count;
-        if (obsResult.count < prioritized.length) truncated = true;
+        if (obsResult.count < selected.length || selected.length < prioritized.length) truncated = true;
       }
     }
 
@@ -180,6 +169,49 @@ export class ContextBuilder {
       `> Do not capture or summarize this block — it is already a summary.`,
       "",
     ].join("\n");
+  }
+
+  private rankSummaries(summaries: SessionSummary[]): SessionSummary[] {
+    return [...summaries].sort((a, b) => this.compareSummary(a, b));
+  }
+
+  private compareSummary(a: SessionSummary, b: SessionSummary): number {
+    const byTopic = this.topicScore(b) - this.topicScore(a);
+    if (byTopic !== 0) return byTopic;
+    return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0);
+  }
+
+  private compareObservations(a: Observation, b: Observation): number {
+    const ta = this.topicScore(a);
+    const tb = this.topicScore(b);
+    if (tb !== ta) return tb - ta;
+
+    const pa = TYPE_PRIORITY[a.type] ?? 0;
+    const pb = TYPE_PRIORITY[b.type] ?? 0;
+    if (pb !== pa) return pb - pa;
+
+    return (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0);
+  }
+
+  private topicScore(item: Pick<Observation, "title" | "narrative"> | Pick<SessionSummary, "request" | "work_done" | "discoveries" | "remaining" | "notes">): number {
+    if (!this.topic) return 0;
+
+    const haystack = [
+      "title" in item ? item.title : item.request,
+      "narrative" in item ? item.narrative : item.work_done,
+      "discoveries" in item ? item.discoveries : undefined,
+      "remaining" in item ? item.remaining : undefined,
+      "notes" in item ? item.notes : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
+    return this.topic
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((term) => term.length > 2)
+      .reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
   }
 
   private buildSummariesSection(summaries: SessionSummary[]): string {
@@ -290,6 +322,18 @@ export class ContextBuilder {
  */
 function wrapInContextTag(content: string): string {
   return `<c-mem-context>\n${content}\n</c-mem-context>`;
+}
+
+function isLowSignalObservation(obs: Observation, hasSummaries: boolean): boolean {
+  const title = (obs.title ?? "").toLowerCase();
+  const narrative = (obs.narrative ?? "").trim().toLowerCase();
+
+  if (title.includes("passthrough") || title.includes("session prompt #0")) return true;
+  if (narrative === "ok" || narrative === "true" || narrative === "done") return true;
+  if (hasSummaries && obs.type === "other") return true;
+  if ((narrative.startsWith("{") || narrative.startsWith("[")) && narrative.length > 400) return true;
+
+  return false;
 }
 
 function safeJsonParse<T>(json: string, fallback: T): T {

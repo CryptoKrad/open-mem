@@ -83,7 +83,7 @@ async function main(): Promise<void> {
 
     postSessionComplete(workerBaseUrl(config), {
       session_id: input.session_id,
-      reason: input.reason,
+      reason: typeof input.reason === "string" ? input.reason : undefined,
     });
   } catch (err) {
     process.stderr.write(

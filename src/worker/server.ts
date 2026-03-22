@@ -67,10 +67,171 @@ const AUTH_TOKEN = ensureAuthToken();
 
 const queue = new ObservationQueue(db);
 const contextBuilder = new ContextBuilder(db, {
-  maxTokens: 1_800,  // tight budget — summaries carry higher signal
-  maxObservations: 40,
-  maxSessions: 5,
+  maxTokens: 1_200,
+  maxObservations: 8,
+  maxSessions: 2,
 });
+
+const AUTO_SUMMARIZE_EVERY = 8;
+const MIN_SUMMARIZABLE_OBSERVATIONS = 3;
+const SUMMARY_QUEUE_BARRIER_MS = 1_500;
+const SUMMARY_QUEUE_RETRY_MS = 12_000;
+const SUMMARY_QUEUE_POLL_MS = 50;
+const deferredSummaryRetries = new Set<string>();
+
+function buildDeterministicSummary(input: {
+  session_id: string;
+  project: string;
+  observations: ReturnType<typeof db.getObservationsBySession>;
+  prompt_number?: number;
+  last_user_message?: string;
+  last_assistant_message?: string;
+}) {
+  const interesting = input.observations.filter(
+    (obs) => obs.type !== "other" || !/passthrough|session prompt #0/i.test(obs.title)
+  );
+  const focus = (interesting.length > 0 ? interesting : input.observations).slice(0, 5);
+  const completed = focus
+    .map((obs) => obs.title)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join("; ") || `${input.observations.length} observations captured`;
+  const discoveries = focus
+    .map((obs) => obs.narrative)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ") || "No concise discoveries extracted.";
+  const request = input.last_user_message?.trim()
+    || `Working in ${input.project}`;
+  const next_steps = input.last_assistant_message?.trim()
+    || (focus.some((obs) => obs.type === "error")
+      ? "Investigate the latest failure and continue from the most recent high-signal observation."
+      : "Resume from the latest completed work and verify remaining tasks.");
+
+  return {
+    session_id: input.session_id,
+    project: input.project,
+    prompt_number: input.prompt_number ?? focus.length,
+    request,
+    work_done: completed,
+    discoveries,
+    remaining: next_steps,
+    notes: "deterministic fallback summary",
+    created_at: new Date().toISOString(),
+    created_at_epoch: Date.now(),
+  };
+}
+
+function countSignificantObservations(observations: ReturnType<typeof db.getObservationsBySession>): number {
+  return observations.filter(
+    (obs) => obs.type !== "other" || !/passthrough|session prompt #0/i.test(obs.title)
+  ).length;
+}
+
+function requestSessionSummary(input: {
+  session_id: string;
+  project: string;
+  observations: ReturnType<typeof db.getObservationsBySession>;
+  prompt_number?: number;
+  last_user_message?: string;
+  last_assistant_message?: string;
+}, sessionDbId: number): void {
+  if (input.observations.length < MIN_SUMMARIZABLE_OBSERVATIONS) return;
+
+  const fallback = () => {
+    db.createSummary(buildDeterministicSummary(input));
+    console.log(`[server] Stored deterministic summary for ${input.session_id}`);
+  };
+
+  if (!process.env["ANTHROPIC_API_KEY"]) {
+    fallback();
+    return;
+  }
+
+  summarizeSession(input, sessionDbId)
+    .then((summary) => {
+      db.insertSummary(summary);
+      console.log(`[server] Session ${input.session_id} summarized (${input.observations.length} obs)`);
+    })
+    .catch((err) => {
+      console.warn(`[server] Summarization failed for ${input.session_id}: ${err}`);
+      fallback();
+    });
+}
+
+function hasActiveQueueWork(counts: { pending: number; processing: number }): boolean {
+  return counts.pending > 0 || counts.processing > 0;
+}
+
+async function awaitSummaryBarrier(sessionId: string, reason: "summarize" | "complete") {
+  const before = db.getQueueCountsBySession(sessionId);
+  if (!hasActiveQueueWork(before)) {
+    return { ...before, timedOut: false, waitedMs: 0 };
+  }
+
+  const drained = await queue.waitForSessionDrain(sessionId, {
+    timeoutMs: SUMMARY_QUEUE_BARRIER_MS,
+    pollIntervalMs: SUMMARY_QUEUE_POLL_MS,
+  });
+
+  console.log(
+    `[server] ${reason} barrier for ${sessionId}: waited ${drained.waitedMs}ms ` +
+      `(pending ${before.pending}→${drained.pending}, processing ${before.processing}→${drained.processing}${drained.timedOut ? ", timed out" : ""})`
+  );
+
+  return drained;
+}
+
+function scheduleDeferredSummaryRetry(input: {
+  session_id: string;
+  project: string;
+  last_user_message?: string;
+  last_assistant_message?: string;
+}, reason: "summarize" | "complete"): boolean {
+  if (deferredSummaryRetries.has(input.session_id)) return false;
+  deferredSummaryRetries.add(input.session_id);
+
+  void (async () => {
+    try {
+      const drained = await queue.waitForSessionDrain(input.session_id, {
+        timeoutMs: SUMMARY_QUEUE_RETRY_MS,
+        pollIntervalMs: SUMMARY_QUEUE_POLL_MS,
+      });
+      const session = db.getSession(input.session_id);
+      if (!session) return;
+
+      const observations = db.getObservationsBySession(input.session_id);
+      if (observations.length < MIN_SUMMARIZABLE_OBSERVATIONS) {
+        console.log(
+          `[server] Deferred ${reason} summary skipped for ${input.session_id}: ` +
+            `${observations.length} observation(s) after waiting ${drained.waitedMs}ms`
+        );
+        return;
+      }
+
+      requestSessionSummary(
+        {
+          session_id: input.session_id,
+          project: session.project ?? input.project,
+          observations,
+          last_user_message: input.last_user_message,
+          last_assistant_message: input.last_assistant_message,
+          prompt_number: session.prompt_counter ?? observations.length,
+        },
+        session.id
+      );
+      console.log(
+        `[server] Deferred ${reason} summary queued for ${input.session_id} after waiting ${drained.waitedMs}ms`
+      );
+    } catch (err) {
+      console.warn(`[server] Deferred ${reason} summary retry failed for ${input.session_id}: ${err}`);
+    } finally {
+      deferredSummaryRetries.delete(input.session_id);
+    }
+  })();
+
+  return true;
+}
 
 // ───────────────────────────────────────────────────────
 // Rate Limiter (token bucket per IP)
@@ -164,7 +325,7 @@ app.use("*", async (c, next) => {
     return c.json({ error: "Too Many Requests" }, 429);
   }
 
-  await next();
+  return next();
 });
 
 /** Request body size limit — reject > 100KB */
@@ -173,7 +334,7 @@ app.use("*", async (c, next) => {
   if (contentLength && parseInt(contentLength, 10) > MAX_BODY_BYTES) {
     return c.json({ error: "Request body too large (max 100KB)" }, 413);
   }
-  await next();
+  return next();
 });
 
 /** Bearer token auth — applies to all routes except GET /health */
@@ -198,7 +359,7 @@ app.use("/api/*", async (c, next) => {
       );
     }
   }
-  await next();
+  return next();
 });
 
 app.use("/sessions/*", async (c, next) => {
@@ -211,7 +372,7 @@ app.use("/sessions/*", async (c, next) => {
       );
     }
   }
-  await next();
+  return next();
 });
 
 // ─────────────────────────────────────
@@ -249,7 +410,7 @@ app.get("/api/context", (c) => {
   const topic = c.req.query("topic") ?? c.req.query("q") ?? undefined;
 
   const builder = topic
-    ? new ContextBuilder(db, { maxTokens: 1_800, maxObservations: 40, maxSessions: 5, topic })
+    ? new ContextBuilder(db, { maxTokens: 1_200, maxObservations: 8, maxSessions: 2, topic })
     : contextBuilder;
 
   const result = builder.build(project);
@@ -286,16 +447,17 @@ app.post("/api/observations", async (c) => {
   // Derive session_id from correlation_id or generate one
   // For standalone observation POSTs, we need a session_id in the body
   // Accept it under session_id key as well
-  const extBody = body as ObservationBody & { session_id?: string; project?: string };
-  const sessionId = extBody.session_id ?? body.correlation_id ?? "default";
-  const project = extBody.project ?? "";
+  const sessionId = body.session_id ?? body.correlation_id ?? "default";
+  const project = body.project ?? "";
+  const promptNumber = typeof body.prompt_number === "number" ? body.prompt_number : undefined;
 
   const queueId = queue.enqueue(
     sessionId,
     body.tool_name,
     body.tool_input,
     String(toolResponseText),
-    project
+    project,
+    promptNumber
   );
 
   return c.json({ success: true, queued: true, queue_id: queueId }, 202);
@@ -306,9 +468,9 @@ app.post("/api/observations", async (c) => {
 // ─────────────────────────────────────
 
 app.post("/api/sessions/init", async (c) => {
-  let body: SessionInitBody & { session_id?: string };
+  let body: SessionInitBody & { session_id?: string; sessionId?: string };
   try {
-    body = await parseJsonBody<SessionInitBody & { session_id?: string }>(
+    body = await parseJsonBody<SessionInitBody & { session_id?: string; sessionId?: string }>(
       c.req.raw,
       MAX_BODY_BYTES
     );
@@ -322,17 +484,18 @@ app.post("/api/sessions/init", async (c) => {
   if (!body.userPrompt || typeof body.userPrompt !== "string") {
     return c.json({ error: "userPrompt is required" }, 400);
   }
-  if (!body.session_id || typeof body.session_id !== "string") {
+  const sessionId = body.session_id ?? body.sessionId;
+  if (!sessionId || typeof sessionId !== "string") {
     return c.json({ error: "session_id is required" }, 400);
   }
 
   const dbId = db.createSession(
-    body.session_id,
+    sessionId,
     body.project,
     body.userPrompt
   );
 
-  return c.json({ success: true, session_id: body.session_id, db_id: dbId });
+  return c.json({ success: true, session_id: sessionId, db_id: dbId });
 });
 
 // ─────────────────────────────────────
@@ -359,15 +522,44 @@ app.post("/api/sessions/summarize", async (c) => {
     return c.json({ error: "Session not found" }, 404);
   }
 
-  // Summarization is handled by Builder A's compression agent.
-  // We emit an event that the compression agent listens to.
+  const barrier = await awaitSummaryBarrier(body.session_id, "summarize");
+  const observations = db.getObservationsBySession(body.session_id);
+  const summaryQueued = observations.length >= MIN_SUMMARIZABLE_OBSERVATIONS;
+  const summaryRetryScheduled = !summaryQueued && hasActiveQueueWork(barrier)
+    ? scheduleDeferredSummaryRetry(
+        {
+          session_id: body.session_id,
+          project: session.project ?? "kradbot",
+          last_user_message: body.last_user_message,
+          last_assistant_message: body.last_assistant_message,
+        },
+        "summarize"
+      )
+    : false;
+
+  requestSessionSummary(
+    {
+      session_id: body.session_id,
+      project: session.project ?? "kradbot",
+      observations,
+      last_user_message: body.last_user_message,
+      last_assistant_message: body.last_assistant_message,
+      prompt_number: session.prompt_counter ?? observations.length,
+    },
+    session.id
+  );
+
   sseManager.emit("summarize-requested", {
     sessionId: body.session_id,
     lastUserMessage: body.last_user_message,
     lastAssistantMessage: body.last_assistant_message,
   });
 
-  return c.json({ success: true, summary_queued: true });
+  return c.json({
+    success: true,
+    summary_queued: summaryQueued,
+    summary_retry_scheduled: summaryRetryScheduled,
+  });
 });
 
 // ─────────────────────────────────────
@@ -391,37 +583,37 @@ app.post("/api/sessions/complete", async (c) => {
 
   db.updateSessionStatus(body.session_id, "completed");
 
-  // In-process summarization: run Haiku summary if API key is present.
-  // Fire-and-forget — never blocks the response.
-  if (process.env["ANTHROPIC_API_KEY"]) {
-    const sessionId = body.session_id;
-    const session = db.getSession(sessionId);
-    if (session) {
-      const observations = db.getObservationsBySession(sessionId);
-      if (observations.length > 0) {
-        summarizeSession(
-          {
-            session_id: sessionId,
-            project: session.project ?? "kradbot",
-            observations,
-            last_user_message: (body as { last_user_message?: string }).last_user_message ?? "",
-            last_assistant_message: (body as { last_assistant_message?: string }).last_assistant_message ?? "",
-            prompt_number: session.prompt_counter ?? observations.length,
-          },
-          session.id
-        )
-          .then((summary) => {
-            db.insertSummary(summary);
-            console.log(`[server] Session ${sessionId} summarized (${observations.length} obs)`);
-          })
-          .catch((err) => {
-            console.warn(`[server] Summarization failed for ${sessionId}: ${err}`);
-          });
-      }
+  const sessionId = body.session_id;
+  const session = db.getSession(sessionId);
+  let summaryRetryScheduled = false;
+  if (session) {
+    const barrier = await awaitSummaryBarrier(sessionId, "complete");
+    const observations = db.getObservationsBySession(sessionId);
+    if (observations.length < MIN_SUMMARIZABLE_OBSERVATIONS && hasActiveQueueWork(barrier)) {
+      summaryRetryScheduled = scheduleDeferredSummaryRetry(
+        {
+          session_id: sessionId,
+          project: session.project ?? "kradbot",
+          last_user_message: (body as { last_user_message?: string }).last_user_message ?? "",
+          last_assistant_message: (body as { last_assistant_message?: string }).last_assistant_message ?? "",
+        },
+        "complete"
+      );
     }
+    requestSessionSummary(
+      {
+        session_id: sessionId,
+        project: session.project ?? "kradbot",
+        observations,
+        last_user_message: (body as { last_user_message?: string }).last_user_message ?? "",
+        last_assistant_message: (body as { last_assistant_message?: string }).last_assistant_message ?? "",
+        prompt_number: session.prompt_counter ?? observations.length,
+      },
+      session.id
+    );
   }
 
-  return c.json({ success: true, completed: true });
+  return c.json({ success: true, completed: true, summary_retry_scheduled: summaryRetryScheduled });
 });
 
 // ─────────────────────────────────────
@@ -436,14 +628,15 @@ app.get("/api/search", (c) => {
 
   const project = c.req.query("project");
   const limit = Math.min(parseInt(c.req.query("limit") ?? "20", 10), 100);
-  const offset = parseInt(c.req.query("offset") ?? "0", 10);
+  const offset = Math.max(parseInt(c.req.query("offset") ?? "0", 10), 0);
 
-  const results = search.searchKeyword(q, project ?? undefined, limit);
+  const ranked = search.searchKeyword(q, project ?? undefined, limit + offset);
+  const results = ranked.slice(offset, offset + limit);
 
   return c.json({
     results,
-    total: results.length,
-    hasMore: results.length === limit,
+    total: ranked.length,
+    hasMore: ranked.length > offset + results.length,
   });
 });
 
@@ -511,8 +704,12 @@ app.get("/stream", (c) => {
 
     const client = {
       id: clientId,
-      write: (data: string) => stream.write(data),
-      close: () => stream.close(),
+      write: async (data: string) => {
+        await stream.write(data);
+      },
+      close: () => {
+        void stream.close();
+      },
       remoteAddress: remote,
     };
 
@@ -590,10 +787,11 @@ app.get("/api/queue", (c) => {
 // ─────────────────────────────────────
 
 app.post("/api/queue/recover", async (c) => {
-  let body: QueueRecoverBody = {};
   try {
     const text = await c.req.text();
-    if (text) body = JSON.parse(text) as QueueRecoverBody;
+    if (text) {
+      JSON.parse(text) as QueueRecoverBody;
+    }
   } catch {}
 
   const recovered = queue.recoverStuck();
@@ -649,7 +847,7 @@ const compressionProcessor: ObservationProcessor = async (
 ): Promise<number> => {
   const session = db.getSession(msg.sessionId);
   const project = session?.project ?? "unknown";
-  const promptNumber = session?.prompt_counter ?? 0;
+  const promptNumber = msg.promptNumber ?? session?.prompt_counter ?? 0;
 
   let kind = "other";
   let title = `${msg.toolName} — passthrough`;
@@ -712,35 +910,26 @@ const compressionProcessor: ObservationProcessor = async (
     `[queue] Processed item ${_queueId} → observation ${obsId} (session: ${msg.sessionId})`
   );
 
-  // ── Threshold-based summarization ────────────────────────────────────────
-  // Sessions rarely call /complete explicitly, so trigger summarization
-  // every SUMMARIZE_EVERY observations to keep summaries fresh.
-  const SUMMARIZE_EVERY = 20;
-  if (process.env["ANTHROPIC_API_KEY"] && obsId % SUMMARIZE_EVERY === 0) {
-    const sessionForSummary = db.getSession(msg.sessionId);
-    if (sessionForSummary) {
-      const allObs = db.getObservationsBySession(msg.sessionId);
-      if (allObs.length >= 5) {
-        // fire-and-forget — never blocks the queue
-        summarizeSession(
-          {
-            session_id: msg.sessionId,
-            project,
-            observations: allObs,
-            last_user_message: `Project: ${project}. Tool session in progress.`,
-            last_assistant_message: `Last tool: ${msg.toolName}`,
-            prompt_number: allObs.length,
-          },
-          (sessionForSummary as unknown as { id: number }).id ?? 0
-        )
-          .then((summary) => {
-            db.insertSummary(summary);
-            console.log(`[queue] Auto-summarized session ${msg.sessionId} at obs ${obsId}`);
-          })
-          .catch((err) =>
-            console.warn(`[queue] Auto-summarization failed: ${err}`)
-          );
-      }
+  const sessionForSummary = db.getSession(msg.sessionId);
+  if (sessionForSummary) {
+    const allObs = db.getObservationsBySession(msg.sessionId);
+    const significantCount = countSignificantObservations(allObs);
+    if (
+      significantCount >= MIN_SUMMARIZABLE_OBSERVATIONS &&
+      significantCount % AUTO_SUMMARIZE_EVERY === 0
+    ) {
+      requestSessionSummary(
+        {
+          session_id: msg.sessionId,
+          project,
+          observations: allObs,
+          last_user_message: `Project: ${project}. Tool session in progress.`,
+          last_assistant_message: `Last tool: ${msg.toolName}`,
+          prompt_number: msg.promptNumber ?? sessionForSummary.prompt_counter ?? significantCount,
+        },
+        sessionForSummary.id
+      );
+      console.log(`[queue] Auto-summary requested for ${msg.sessionId} at ${significantCount} significant observations`);
     }
   }
 

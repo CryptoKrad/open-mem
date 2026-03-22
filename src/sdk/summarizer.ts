@@ -10,7 +10,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { buildSummaryPrompt } from "./prompts.js";
-import type { Observation, Session, Summary, SummarizeInput } from "../types.js";
+import type { Session, Summary, SummarizeInput } from "../types.js";
 
 // ─── XML Parser ───────────────────────────────────────────────────────────────
 
@@ -59,7 +59,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 const BACKOFF_DELAYS = [1_000, 2_000, 4_000];
+const REQUEST_TIMEOUT_MS = 15_000;
 
 // ─── Summarizer ───────────────────────────────────────────────────────────────
 
@@ -116,11 +126,15 @@ export async function summarizeSession(
     }
 
     try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
+      const response = await withTimeout(
+        client.messages.create({
+          model,
+          max_tokens: 1024,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        REQUEST_TIMEOUT_MS,
+        "Anthropic summarizer request"
+      );
 
       const text =
         response.content[0]?.type === "text" ? response.content[0].text : "";
