@@ -1,5 +1,7 @@
 # Open-Mem
 
+[![CI](https://github.com/CryptoKrad/open-mem/actions/workflows/ci.yml/badge.svg)](https://github.com/CryptoKrad/open-mem/actions/workflows/ci.yml)
+
 > **Episodic memory for AI coding agents.** Captures every tool call, file edit, exec output, and decision across sessions into a local SQLite database — then injects compressed context back into new sessions automatically.
 
 Open-Mem is the **episodic layer** of a full AI agent memory system. It answers the question every agent faces at session start: *"What were we doing?"*
